@@ -30,8 +30,7 @@
           "parameters": [
             { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime,isRead" },
             { "name": "$filter", "value": "contains(subject, 'STR | Confirm ID') and isRead eq false" },
-            { "name": "$top", "value": "50" },
-            { "name": "$orderby", "value": "receivedDateTime desc" }
+            { "name": "$top", "value": "50" }
           ]
         },
         "options": {
