@@ -90,7 +90,16 @@ export async function downloadPdfFromForm(formInfo, htmlFilePath = null, downloa
   const browser = await puppeteer.launch({
     headless: headless,
     executablePath: executablePath,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-crashpad',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--single-process',
+      '--no-zygote'
+    ]
   });
   
   console.log('Browser launched');
