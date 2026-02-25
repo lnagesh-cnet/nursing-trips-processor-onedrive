@@ -1,0 +1,303 @@
+{
+  "name": "Nursing Trips Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9-17 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "notes": "Runs hourly 9AM-5PM Mon-Fri EST"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://login.microsoftonline.com/2d090015-90ea-4cce-92f0-1581080b0fc2/oauth2/v2.0/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "grant_type", "value": "client_credentials" },
+            { "name": "client_id", "value": "a66e0bc0-d73f-4b3c-89a0-7ae7042ce1e6" },
+            { "name": "client_secret", "value": "={{ $vars.MS_CLIENT_SECRET }}" },
+            { "name": "scope", "value": "https://graph.microsoft.com/.default" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "get-ms-token",
+      "name": "Get MS Graph Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "notes": "Gets OAuth token using client credentials",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime" },
+            { "name": "$filter", "value": "contains(subject, 'STR | Confirm ID')" },
+            { "name": "$top", "value": "50" },
+            { "name": "$orderby", "value": "receivedDateTime desc" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-emails",
+      "name": "Fetch Trip Emails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "check-emails-exist",
+              "leftValue": "={{ $json.value.length }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-emails-found",
+      "name": "Any Emails?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the email array from Graph API response\nconst emails = $input.first().json.value || [];\n\n// Return each email as a separate item for the loop\nreturn emails.map(email => ({ json: email }));"
+      },
+      "id": "split-emails",
+      "name": "Split Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, -60]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages/{{ $json.id }}/attachments",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get MS Graph Token').first().json.access_token }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "get-attachments",
+      "name": "Get Attachments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, -60],
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find the securedoc attachment\nconst attachments = $input.first().json.value || [];\nconst securedoc = attachments.find(a => (a.name || '').includes('securedoc'));\n\nif (!securedoc) {\n  throw new Error('No securedoc attachment found');\n}\n\n// Pass through the email data + attachment info\nconst email = $('Split Emails').first().json;\n\nreturn [{\n  json: {\n    messageId: email.id,\n    attachmentId: securedoc.id,\n    emailSubject: email.subject,\n    receivedDateTime: email.receivedDateTime\n  }\n}];"
+      },
+      "id": "find-securedoc",
+      "name": "Find Securedoc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, -60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://nursing-trips-processor.onrender.com/process",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messageId\": \"{{ $json.messageId }}\",\n  \"attachmentId\": \"{{ $json.attachmentId }}\",\n  \"emailSubject\": \"{{ $json.emailSubject }}\"\n}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "call-processor",
+      "name": "Process Email (Render)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, -60],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "notes": "Calls nursing-trips-processor on Render. Puppeteer + Azure Doc Intelligence + Drive upload."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Expand students into individual rows for Google Sheets\nconst data = $input.first().json;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc').first().json.receivedDateTime || '';\n\n// If no students, create one row with empty student fields\nconst studentList = students.length > 0\n  ? students\n  : [{ initials: '', studentId: '', dob: '', medicalNeeds: '' }];\n\nconst rows = studentList.map(student => ({\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: student.initials || '',\n    studentId: student.studentId || '',\n    dob: student.dob || '',\n    medicalNeeds: student.medicalNeeds || '',\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}));\n\nreturn rows;"
+      },
+      "id": "expand-students",
+      "name": "Expand Students",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, -60],
+      "notes": "Creates one output item per student for Sheets append"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "trip_details",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "A": "={{ $json.confirmId }}",
+            "B": "={{ $json.tripCode }}",
+            "C": "={{ $json.todaysDate }}",
+            "D": "={{ $json.overnightTrip }}",
+            "E": "={{ $json.startDate }}",
+            "F": "={{ $json.endDate }}",
+            "G": "={{ $json.startTime }}",
+            "H": "={{ $json.endTime }}",
+            "I": "={{ $json.destination }}",
+            "J": "={{ $json.schoolName }}",
+            "K": "={{ $json.address }}",
+            "L": "={{ $json.atsDbn }}",
+            "M": "={{ $json.district }}",
+            "N": "={{ $json.region }}",
+            "O": "={{ $json.requester }}",
+            "P": "={{ $json.phone1 }}",
+            "Q": "={{ $json.phone2 }}",
+            "R": "={{ $json.studentInitials }}",
+            "S": "={{ $json.studentId }}",
+            "T": "={{ $json.dob }}",
+            "U": "={{ $json.medicalNeeds }}",
+            "V": "={{ $json.driveUrl }}",
+            "W": "",
+            "X": "={{ $json.emailReceived }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "write-sheets",
+      "name": "Write to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1980, -60],
+      "notes": "Appends one row per student to trip_details tab (columns A-X)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No emails to process\nreturn [{ json: { message: 'No new nursing trip emails found', processed: 0 } }];"
+      },
+      "id": "no-emails",
+      "name": "No Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 140]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [{ "node": "Get MS Graph Token", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get MS Graph Token": {
+      "main": [
+        [{ "node": "Fetch Trip Emails", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Trip Emails": {
+      "main": [
+        [{ "node": "Any Emails?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Emails?": {
+      "main": [
+        [{ "node": "Split Emails", "type": "main", "index": 0 }],
+        [{ "node": "No Emails", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split Emails": {
+      "main": [
+        [{ "node": "Get Attachments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Attachments": {
+      "main": [
+        [{ "node": "Find Securedoc", "type": "main", "index": 0 }]
+      ]
+    },
+    "Find Securedoc": {
+      "main": [
+        [{ "node": "Process Email (Render)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process Email (Render)": {
+      "main": [
+        [{ "node": "Expand Students", "type": "main", "index": 0 }]
+      ]
+    },
+    "Expand Students": {
+      "main": [
+        [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "nursing-trips" },
+    { "name": "automation" }
+  ]
+}

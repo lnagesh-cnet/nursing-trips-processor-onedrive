@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: nursing-trips-processor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    healthCheckPath: /
+    envVars:
+      - key: GOOGLE_CREDENTIALS_BASE64
+        sync: false
+      - key: DRIVE_FOLDER_ID
+        value: 19vqYbaZ9sljtROSlVIZFnp5IaTGroyHT
+      - key: MS_TENANT_ID
+        sync: false
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false
+      - key: MS_USER_EMAIL
+        value: lnagesh@comprehensivenet.com
+      - key: PORT
+        value: "10000"
