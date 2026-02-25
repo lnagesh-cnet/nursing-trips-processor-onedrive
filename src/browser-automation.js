@@ -88,17 +88,18 @@ export async function downloadPdfFromForm(formInfo, htmlFilePath = null, downloa
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   
   const browser = await puppeteer.launch({
-    headless: headless,
+    headless: 'new',
     executablePath: executablePath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-crashpad',
       '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--single-process',
-      '--no-zygote'
+      '--disable-features=Crashpad',
+      '--disable-breakpad',
+      '--crash-dumps-dir=/tmp/crashes',
+      '--no-first-run',
+      '--no-default-browser-check'
     ]
   });
   

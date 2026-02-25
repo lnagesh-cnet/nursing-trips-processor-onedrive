@@ -41,8 +41,9 @@ RUN npm install --omit=dev
 COPY src/ ./src/
 
 # ── Run as non-root ─────────────────────────────────────────────────────────
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN groupadd -r appuser && useradd -r -g appuser -m appuser
 RUN chown -R appuser:appuser /app
+RUN mkdir -p /tmp/crashes && chmod 777 /tmp/crashes
 USER appuser
 
 # ── Render uses PORT env var (default 10000) ────────────────────────────────
