@@ -81,9 +81,10 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     const metadata = parseEmailSubject(emailSubject || '');
     const pdfFilename = `${metadata.tripCode || 'UNKNOWN'}_${metadata.confirmId || Date.now()}.pdf`;
 
-    // ===== STEP 6: Upload PDF to Google Drive =====
+    // ===== STEP 6: Upload PDF to Google Drive (organized by year/month) =====
     console.log('[PROCESSOR] Uploading to Google Drive...');
-    const driveFileId = await uploadToDrive(pdfPath, pdfFilename);
+    const tripDate = extractedData.tripFields.startDate || extractedData.tripFields.todaysDate || '';
+    const driveFileId = await uploadToDrive(pdfPath, pdfFilename, tripDate);
     const driveUrl = `https://drive.google.com/file/d/${driveFileId}/view`;
     console.log('[PROCESSOR] Uploaded to Drive:', driveUrl);
 
@@ -151,9 +152,41 @@ async function extractFieldsWithPdfParse(pdfPath, emailSubject = '') {
 }
 
 /**
- * Upload PDF to Google Drive
+ * Find or create a subfolder inside a parent folder
  */
-async function uploadToDrive(pdfPath, filename) {
+async function findOrCreateFolder(name, parentId) {
+  // Search for existing folder
+  const query = `name='${name}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const list = await drive.files.list({
+    q: query,
+    fields: 'files(id,name)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  if (list.data.files.length > 0) {
+    console.log(`[DRIVE] Found existing folder: ${name}`);
+    return list.data.files[0].id;
+  }
+
+  // Create new folder
+  const folder = await drive.files.create({
+    requestBody: {
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentId],
+    },
+    fields: 'id',
+    supportsAllDrives: true,
+  });
+  console.log(`[DRIVE] Created folder: ${name}`);
+  return folder.data.id;
+}
+
+/**
+ * Upload PDF to Google Drive organized by year/month
+ */
+async function uploadToDrive(pdfPath, filename, tripDate) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/drive.file'],
   });
@@ -161,9 +194,28 @@ async function uploadToDrive(pdfPath, filename) {
   const authClient = await auth.getClient();
   google.options({ auth: authClient });
 
+  // Determine year and month from trip date (MM/DD/YYYY format)
+  const monthNames = ['January','February','March','April','May','June',
+    'July','August','September','October','November','December'];
+  let year, month;
+  const dateMatch = tripDate.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (dateMatch) {
+    year = dateMatch[3];
+    month = monthNames[parseInt(dateMatch[1], 10) - 1] || 'Unknown';
+  } else {
+    const now = new Date();
+    year = String(now.getFullYear());
+    month = monthNames[now.getMonth()];
+  }
+
+  // Create folder structure: DRIVE_FOLDER_ID / 2026 / February
+  const yearFolderId = await findOrCreateFolder(year, DRIVE_FOLDER_ID);
+  const monthFolderId = await findOrCreateFolder(month, yearFolderId);
+  console.log(`[DRIVE] Uploading to ${year}/${month}/`);
+
   const fileMetadata = {
     name: filename,
-    parents: [DRIVE_FOLDER_ID],
+    parents: [monthFolderId],
   };
 
   const media = {

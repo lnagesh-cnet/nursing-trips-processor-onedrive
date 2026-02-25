@@ -187,14 +187,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Expand students into individual rows for Google Sheets\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\n// If no students, create one row with empty student fields\nconst studentList = students.length > 0\n  ? students\n  : [{ initials: '', studentId: '', dob: '', medicalNeeds: '' }];\n\nconsole.log(`Creating ${studentList.length} row(s) for Google Sheets`);\n\nconst rows = studentList.map(student => ({\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: student.initials || '',\n    studentId: student.studentId || '',\n    dob: student.dob || '',\n    medicalNeeds: student.medicalNeeds || '',\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}));\n\nreturn rows;"
+        "jsCode": "// Build single row with students as comma-separated arrays\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\nconsole.log(`Formatting ${students.length} student(s) as arrays`);\n\nreturn [{\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: students.map(s => s.medicalNeeds || '').join(', '),\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}];"
       },
       "id": "expand-students",
-      "name": "Expand Student Records",
+      "name": "Format Sheet Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2620, -200],
-      "notes": "Creates one output row per student for Google Sheets (columns A-X)"
+      "notes": "Builds single row with students as comma-separated arrays (columns R-U)"
     },
     {
       "parameters": {
@@ -246,28 +246,6 @@
       "typeVersion": 4.5,
       "position": [2880, -200],
       "notes": "Appends one row per student to trip_details tab (columns A-X)"
-    },
-    {
-      "parameters": {
-        "authentication": "genericCredentialType",
-        "genericAuthType": "oAuth2Api",
-        "method": "PATCH",
-        "url": "=https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages/{{ $('Find Securedoc Attachment').first().json.messageId }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "{ \"isRead\": true }",
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "mark-read",
-      "name": "Mark Email as Read",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [3140, -200],
-      "retryOnFail": true,
-      "maxTries": 2,
-      "notes": "Marks the email as read in Outlook so it won't be reprocessed"
     },
     {
       "parameters": {
@@ -342,17 +320,12 @@
     },
     "Log Trip Fields": {
       "main": [
-        [{ "node": "Expand Student Records", "type": "main", "index": 0 }]
+        [{ "node": "Format Sheet Row", "type": "main", "index": 0 }]
       ]
     },
-    "Expand Student Records": {
+    "Format Sheet Row": {
       "main": [
         [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
-      ]
-    },
-    "Write to Google Sheets": {
-      "main": [
-        [{ "node": "Mark Email as Read", "type": "main", "index": 0 }]
       ]
     }
   },
