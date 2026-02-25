@@ -30,7 +30,6 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     // ===== STEP 1: Fetch HTML from Microsoft Graph =====
     if (!htmlContent && !htmlBase64 && messageId && attachmentId) {
       console.log('[PROCESSOR] Fetching attachment from Graph API...');
-      const fetch = (await import('node-fetch')).default;
 
       const tokenResp = await fetch(
         `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
@@ -55,7 +54,8 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
       });
       if (!attachResp.ok) throw new Error(`Graph fetch failed: ${attachResp.status}`);
 
-      const buffer = await attachResp.buffer();
+      const arrayBuffer = await attachResp.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
       const { gunzipSync } = await import('zlib');
       try { htmlContent = gunzipSync(buffer).toString('utf-8'); }
       catch(e) { htmlContent = buffer.toString('utf-8'); }

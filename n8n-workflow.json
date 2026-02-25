@@ -12,59 +12,24 @@
           ]
         }
       },
-      "id": "schedule-trigger",
-      "name": "Schedule Trigger",
+      "id": "schedule",
+      "name": "Hourly Schedule",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [0, 0],
-      "notes": "Runs hourly 9AM-5PM Mon-Fri EST"
+      "notes": "Runs every hour from 9AM to 5PM, Monday-Friday (EST)"
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://login.microsoftonline.com/2d090015-90ea-4cce-92f0-1581080b0fc2/oauth2/v2.0/token",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            { "name": "grant_type", "value": "client_credentials" },
-            { "name": "client_id", "value": "a66e0bc0-d73f-4b3c-89a0-7ae7042ce1e6" },
-            { "name": "client_secret", "value": "={{ $vars.MS_CLIENT_SECRET }}" },
-            { "name": "scope", "value": "https://graph.microsoft.com/.default" }
-          ]
-        },
-        "options": {
-          "timeout": 30000
-        }
-      },
-      "id": "get-ms-token",
-      "name": "Get MS Graph Token",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [220, 0],
-      "notes": "Gets OAuth token using client credentials",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 5000
-    },
-    {
-      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
         "method": "GET",
         "url": "https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $json.access_token }}"
-            }
-          ]
-        },
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime" },
-            { "name": "$filter", "value": "contains(subject, 'STR | Confirm ID')" },
+            { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime,isRead" },
+            { "name": "$filter", "value": "contains(subject, 'STR | Confirm ID') and isRead eq false" },
             { "name": "$top", "value": "50" },
             { "name": "$orderby", "value": "receivedDateTime desc" }
           ]
@@ -74,12 +39,14 @@
         }
       },
       "id": "fetch-emails",
-      "name": "Fetch Trip Emails",
+      "name": "Fetch Unread Trip Emails",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [440, 0],
+      "position": [280, 0],
       "retryOnFail": true,
-      "maxTries": 2
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "notes": "Gets unread emails with 'STR | Confirm ID' in subject via Microsoft Graph API"
     },
     {
       "parameters": {
@@ -87,7 +54,7 @@
           "options": { "caseSensitive": true, "leftValue": "" },
           "conditions": [
             {
-              "id": "check-emails-exist",
+              "id": "check-count",
               "leftValue": "={{ $json.value.length }}",
               "rightValue": "0",
               "operator": {
@@ -98,33 +65,45 @@
           ]
         }
       },
-      "id": "if-emails-found",
-      "name": "Any Emails?",
+      "id": "check-emails",
+      "name": "Any New Emails?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [660, 0]
+      "position": [540, 0],
+      "notes": "Checks if any unread trip emails were found"
     },
     {
       "parameters": {
-        "jsCode": "// Extract the email array from Graph API response\nconst emails = $input.first().json.value || [];\n\n// Return each email as a separate item for the loop\nreturn emails.map(email => ({ json: email }));"
+        "jsCode": "// Split the Graph API response array into individual email items\nconst emails = $input.first().json.value || [];\nconsole.log(`Found ${emails.length} unread trip email(s)`);\nreturn emails.map(email => ({ json: email }));"
       },
       "id": "split-emails",
-      "name": "Split Emails",
+      "name": "Split Email List",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [880, -60]
+      "position": [800, -100],
+      "notes": "Splits the email array so each email is processed individually"
     },
     {
       "parameters": {
+        "jsCode": "// Extract and display key email details for monitoring\nconst email = $input.first().json;\nconsole.log(`Processing: ${email.subject}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments\n  }\n}];"
+      },
+      "id": "log-email",
+      "name": "Log Email Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, -100],
+      "notes": "Displays email subject, date, and attachment status for visibility"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
         "method": "GET",
-        "url": "=https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages/{{ $json.id }}/attachments",
-        "sendHeaders": true,
-        "headerParameters": {
+        "url": "=https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages/{{ $json.messageId }}/attachments",
+        "sendQuery": true,
+        "queryParameters": {
           "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $('Get MS Graph Token').first().json.access_token }}"
-            }
+            { "name": "$select", "value": "id,name,contentType,size" }
           ]
         },
         "options": {
@@ -132,22 +111,24 @@
         }
       },
       "id": "get-attachments",
-      "name": "Get Attachments",
+      "name": "Get Email Attachments",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, -60],
+      "position": [1320, -100],
       "retryOnFail": true,
-      "maxTries": 2
+      "maxTries": 2,
+      "notes": "Fetches all attachments for this email from Microsoft Graph"
     },
     {
       "parameters": {
-        "jsCode": "// Find the securedoc attachment\nconst attachments = $input.first().json.value || [];\nconst securedoc = attachments.find(a => (a.name || '').includes('securedoc'));\n\nif (!securedoc) {\n  throw new Error('No securedoc attachment found');\n}\n\n// Pass through the email data + attachment info\nconst email = $('Split Emails').first().json;\n\nreturn [{\n  json: {\n    messageId: email.id,\n    attachmentId: securedoc.id,\n    emailSubject: email.subject,\n    receivedDateTime: email.receivedDateTime\n  }\n}];"
+        "jsCode": "// Find the securedoc HTML attachment\nconst attachments = $input.first().json.value || [];\nconst securedoc = attachments.find(a =>\n  (a.name || '').toLowerCase().includes('securedoc')\n);\n\nif (!securedoc) {\n  console.log('No securedoc attachment found — skipping email');\n  return [];  // Empty = skip downstream nodes\n}\n\nconst emailInfo = $('Log Email Details').first().json;\nconsole.log(`Found: ${securedoc.name} (${(securedoc.size / 1024).toFixed(1)} KB)`);\n\nreturn [{\n  json: {\n    messageId: emailInfo.messageId,\n    emailSubject: emailInfo.subject,\n    receivedDateTime: emailInfo.receivedDateTime,\n    attachmentId: securedoc.id,\n    attachmentName: securedoc.name,\n    attachmentSize: securedoc.size\n  }\n}];"
       },
       "id": "find-securedoc",
-      "name": "Find Securedoc",
+      "name": "Find Securedoc Attachment",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, -60]
+      "position": [1580, -100],
+      "notes": "Identifies the 'securedoc' HTML file from the attachment list"
     },
     {
       "parameters": {
@@ -161,25 +142,60 @@
         }
       },
       "id": "call-processor",
-      "name": "Process Email (Render)",
+      "name": "Send to Render Processor",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1540, -60],
+      "position": [1840, -100],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 10000,
-      "notes": "Calls nursing-trips-processor on Render. Puppeteer + Azure Doc Intelligence + Drive upload."
+      "notes": "Sends messageId + attachmentId to Render. Processor fetches HTML, runs Puppeteer, extracts PDF fields, uploads to Drive."
     },
     {
       "parameters": {
-        "jsCode": "// Expand students into individual rows for Google Sheets\nconst data = $input.first().json;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc').first().json.receivedDateTime || '';\n\n// If no students, create one row with empty student fields\nconst studentList = students.length > 0\n  ? students\n  : [{ initials: '', studentId: '', dob: '', medicalNeeds: '' }];\n\nconst rows = studentList.map(student => ({\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: student.initials || '',\n    studentId: student.studentId || '',\n    dob: student.dob || '',\n    medicalNeeds: student.medicalNeeds || '',\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}));\n\nreturn rows;"
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
       },
-      "id": "expand-students",
-      "name": "Expand Students",
+      "id": "check-result",
+      "name": "Processing OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2100, -100],
+      "notes": "Checks if the Render processor returned success"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display the extracted trip fields for monitoring\nconst data = $input.first().json;\nconst trip = data.tripFields || {};\nconst studentCount = (data.students || []).length;\n\nconsole.log(`Trip: ${trip.confirmId} | ${trip.tripCode} | ${trip.destination}`);\nconsole.log(`Students: ${studentCount}`);\n\nreturn [{\n  json: {\n    confirmId: trip.confirmId || '',\n    tripCode: trip.tripCode || '',\n    destination: trip.destination || '',\n    schoolName: trip.schoolName || '',\n    startDate: trip.startDate || '',\n    endDate: trip.endDate || '',\n    startTime: trip.startTime || '',\n    endTime: trip.endTime || '',\n    overnightTrip: trip.overnightTrip || '',\n    studentCount: studentCount,\n    driveUrl: data.driveUrl || '',\n    pdfFilename: data.pdfFilename || '',\n    // Pass through full data for next nodes\n    _fullResponse: data\n  }\n}];"
+      },
+      "id": "log-trip",
+      "name": "Log Trip Fields",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1760, -60],
-      "notes": "Creates one output item per student for Sheets append"
+      "position": [2360, -200],
+      "notes": "Shows extracted trip data: Confirm ID, Trip Code, destination, school, dates, student count"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Expand students into individual rows for Google Sheets\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\n// If no students, create one row with empty student fields\nconst studentList = students.length > 0\n  ? students\n  : [{ initials: '', studentId: '', dob: '', medicalNeeds: '' }];\n\nconsole.log(`Creating ${studentList.length} row(s) for Google Sheets`);\n\nconst rows = studentList.map(student => ({\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: student.initials || '',\n    studentId: student.studentId || '',\n    dob: student.dob || '',\n    medicalNeeds: student.medicalNeeds || '',\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}));\n\nreturn rows;"
+      },
+      "id": "expand-students",
+      "name": "Expand Student Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2620, -200],
+      "notes": "Creates one output row per student for Google Sheets (columns A-X)"
     },
     {
       "parameters": {
@@ -229,65 +245,115 @@
       "name": "Write to Google Sheets",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [1980, -60],
+      "position": [2880, -200],
       "notes": "Appends one row per student to trip_details tab (columns A-X)"
     },
     {
       "parameters": {
-        "jsCode": "// No emails to process\nreturn [{ json: { message: 'No new nursing trip emails found', processed: 0 } }];"
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "method": "PATCH",
+        "url": "=https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages/{{ $('Find Securedoc Attachment').first().json.messageId }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"isRead\": true }",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "mark-read",
+      "name": "Mark Email as Read",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3140, -200],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "Marks the email as read in Outlook so it won't be reprocessed"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No unread trip emails found\nconsole.log('No new nursing trip emails to process');\nreturn [{ json: { message: 'No new nursing trip emails found', timestamp: new Date().toISOString() } }];"
       },
       "id": "no-emails",
-      "name": "No Emails",
+      "name": "No New Emails",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [880, 140]
+      "position": [800, 120],
+      "notes": "Logs when no unread trip emails are found"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log the processing failure details\nconst result = $input.first().json;\nconst emailInfo = $('Find Securedoc Attachment').first().json;\n\nconsole.error(`FAILED: ${emailInfo.emailSubject}`);\nconsole.error(`Error: ${result.error || 'Unknown error'}`);\n\nreturn [{\n  json: {\n    status: 'FAILED',\n    emailSubject: emailInfo.emailSubject,\n    messageId: emailInfo.messageId,\n    error: result.error || 'Unknown processing error',\n    elapsed: result.elapsed || '',\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "processing-failed",
+      "name": "Processing Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2360, 0],
+      "notes": "Logs error details when the Render processor fails. Email stays unread for retry."
     }
   ],
   "connections": {
-    "Schedule Trigger": {
+    "Hourly Schedule": {
       "main": [
-        [{ "node": "Get MS Graph Token", "type": "main", "index": 0 }]
+        [{ "node": "Fetch Unread Trip Emails", "type": "main", "index": 0 }]
       ]
     },
-    "Get MS Graph Token": {
+    "Fetch Unread Trip Emails": {
       "main": [
-        [{ "node": "Fetch Trip Emails", "type": "main", "index": 0 }]
+        [{ "node": "Any New Emails?", "type": "main", "index": 0 }]
       ]
     },
-    "Fetch Trip Emails": {
+    "Any New Emails?": {
       "main": [
-        [{ "node": "Any Emails?", "type": "main", "index": 0 }]
+        [{ "node": "Split Email List", "type": "main", "index": 0 }],
+        [{ "node": "No New Emails", "type": "main", "index": 0 }]
       ]
     },
-    "Any Emails?": {
+    "Split Email List": {
       "main": [
-        [{ "node": "Split Emails", "type": "main", "index": 0 }],
-        [{ "node": "No Emails", "type": "main", "index": 0 }]
+        [{ "node": "Log Email Details", "type": "main", "index": 0 }]
       ]
     },
-    "Split Emails": {
+    "Log Email Details": {
       "main": [
-        [{ "node": "Get Attachments", "type": "main", "index": 0 }]
+        [{ "node": "Get Email Attachments", "type": "main", "index": 0 }]
       ]
     },
-    "Get Attachments": {
+    "Get Email Attachments": {
       "main": [
-        [{ "node": "Find Securedoc", "type": "main", "index": 0 }]
+        [{ "node": "Find Securedoc Attachment", "type": "main", "index": 0 }]
       ]
     },
-    "Find Securedoc": {
+    "Find Securedoc Attachment": {
       "main": [
-        [{ "node": "Process Email (Render)", "type": "main", "index": 0 }]
+        [{ "node": "Send to Render Processor", "type": "main", "index": 0 }]
       ]
     },
-    "Process Email (Render)": {
+    "Send to Render Processor": {
       "main": [
-        [{ "node": "Expand Students", "type": "main", "index": 0 }]
+        [{ "node": "Processing OK?", "type": "main", "index": 0 }]
       ]
     },
-    "Expand Students": {
+    "Processing OK?": {
+      "main": [
+        [{ "node": "Log Trip Fields", "type": "main", "index": 0 }],
+        [{ "node": "Processing Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Trip Fields": {
+      "main": [
+        [{ "node": "Expand Student Records", "type": "main", "index": 0 }]
+      ]
+    },
+    "Expand Student Records": {
       "main": [
         [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Write to Google Sheets": {
+      "main": [
+        [{ "node": "Mark Email as Read", "type": "main", "index": 0 }]
       ]
     }
   },
