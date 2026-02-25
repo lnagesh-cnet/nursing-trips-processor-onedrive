@@ -178,15 +178,19 @@ async function uploadToDrive(pdfPath, filename) {
     supportsAllDrives: true,
   });
 
-  // Make file accessible to anyone with link
-  await drive.permissions.create({
-    fileId: response.data.id,
-    requestBody: {
-      role: 'reader',
-      type: 'anyone',
-    },
-    supportsAllDrives: true,
-  });
+  // Make file accessible to anyone with link (skip if folder already shares)
+  try {
+    await drive.permissions.create({
+      fileId: response.data.id,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+      supportsAllDrives: true,
+    });
+  } catch (permErr) {
+    console.log('[DRIVE] Permission already inherited from parent folder, skipping');
+  }
 
   return response.data.id;
 }
