@@ -121,6 +121,7 @@ async function extractFieldsWithPdfParse(pdfPath, emailSubject = '') {
     const data = await pdfParse(pdfBuffer);
     const text = data.text;
     console.log(`[PDFPARSE] Extracted text length: ${text.length}`);
+    console.log(`[PDFPARSE] === RAW TEXT START ===\n${text}\n=== RAW TEXT END ===`);
 
     const fields = buildFieldsObject(text, {}, {}, emailSubject, 'pdf_parse');
     const students = fields.students || parseStudentTable(text);
