@@ -14,35 +14,25 @@ app.get('/', (req, res) => {
 
 /**
  * Main endpoint called by N8N
- * 
- * N8N sends:
- * {
- *   "htmlContent": "<full securedoc HTML string>",
- *   "filename": "securedoc_20260209T103019.html",
- *   "emailSubject": "STR | Confirm ID: 316126 | 20K104A | TripDate: 2/23/2026 | ..."
- * }
- * 
- * Returns:
- * {
- *   "success": true,
- *   "driveUrl": "https://drive.google.com/file/d/.../view",
- *   "pdfFilename": "20K748_314033.pdf",
- *   "tripFields": { confirmId, startDate, endDate, ... },
- *   "students": [{ initials, studentId, dob, medicalNeeds }]
- * }
+ *
+ * Accepts EITHER:
+ *   { "htmlContent": "...", "filename": "...", "emailSubject": "..." }
+ * OR:
+ *   { "messageId": "...", "attachmentId": "...", "emailSubject": "..." }
+ *   (processor fetches the attachment from Graph API using env vars)
  */
 app.post('/process', async (req, res) => {
   const startTime = Date.now();
   console.log('[SERVER] Received /process request');
 
-  const { htmlContent, filename, emailSubject } = req.body;
+  const { htmlContent, htmlBase64, messageId, attachmentId, filename, emailSubject } = req.body;
 
-  if (!htmlContent) {
-    return res.status(400).json({ success: false, error: 'Missing htmlContent in request body' });
+  if (!htmlContent && !htmlBase64 && !(messageId && attachmentId)) {
+    return res.status(400).json({ success: false, error: 'Provide htmlContent OR messageId+attachmentId' });
   }
 
   try {
-    const result = await processSecureEmail({ htmlContent, filename, emailSubject });
+    const result = await processSecureEmail({ htmlContent, htmlBase64, messageId, attachmentId, filename, emailSubject });
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[SERVER] Done in ${elapsed}s`);
     res.json({ success: true, elapsed: `${elapsed}s`, ...result });
