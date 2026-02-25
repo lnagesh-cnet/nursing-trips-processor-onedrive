@@ -130,16 +130,21 @@ export function buildFieldsObject(text, kvMap, titleMetadata, emailSubject, meth
 
 /**
  * Parse student table rows from raw text
- * 
- * CONFIRMED FORMAT (real PDF, Feb 10 2026):
- * Header: Initials | Student-Id | Date of Birth | Medical Needs
- * Row:    SD         256382854    01/12/2018       ASTHMA
+ *
+ * pdf-parse extracts table columns concatenated WITHOUT spaces:
+ *   Header: "InitialsStudent-IdDate of BirthMedical Needs"
+ *   Row:    "BP25849100106/01/2019Meds: EMS Albuterol,STD Albuterol"
+ *
+ * Also handles the spaced format (if pdf-parse preserves spacing):
+ *   Header: "Initials  Student-Id  Date of Birth  Medical Needs"
+ *   Row:    "SD  256382854  01/12/2018  ASTHMA"
  */
 export function parseStudentTable(text) {
   const students = [];
   if (!text) return students;
 
-  const tableStart = text.search(/Initials\s+Student[\-\s]?Id\s+Date\s+of\s+Birth/i);
+  // Match header with OR without spaces between column names
+  const tableStart = text.search(/Initials\s*Student[\-\s]?Id\s*Date\s*of\s*Birth/i);
   if (tableStart === -1) {
     console.log('[DOCAI] Student table header not found in text');
     return students;
@@ -153,11 +158,15 @@ export function parseStudentTable(text) {
     if (/Initials/i.test(lines[i])) { dataStart = i + 1; break; }
   }
 
-  // Pattern: 2 caps, 6-12 digit ID, MM/DD/YYYY, remaining text = medical needs
-  const ROW = /^([A-Z]{2})\s+(\d{6,12})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*(.*)/;
+  // Two patterns:
+  // 1. Concatenated (no spaces): BP25849100106/01/2019Meds: EMS Albuterol
+  //    {2 caps}{6-12 digits}{MM/DD/YYYY}{rest}
+  // 2. Spaced: BP  258491001  06/01/2019  Meds: EMS Albuterol
+  const ROW_CONCAT = /^([A-Z]{2})(\d{6,12})(\d{1,2}\/\d{1,2}\/\d{4})(.*)/;
+  const ROW_SPACED = /^([A-Z]{2})\s+(\d{6,12})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*(.*)/;
 
   for (let i = dataStart; i < Math.min(dataStart + 15, lines.length); i++) {
-    const m = lines[i].match(ROW);
+    const m = lines[i].match(ROW_SPACED) || lines[i].match(ROW_CONCAT);
     if (m) {
       students.push({
         initials:     m[1].trim(),
