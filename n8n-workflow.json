@@ -29,7 +29,7 @@
         "queryParameters": {
           "parameters": [
             { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime,isRead" },
-            { "name": "$filter", "value": "contains(subject, 'STR | Confirm ID') and isRead eq false" },
+            { "name": "$filter", "value": "contains(subject, 'Confirm ID') and startswith(subject, 'STR') and isRead eq false" },
             { "name": "$top", "value": "50" }
           ]
         },
@@ -45,7 +45,7 @@
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 5000,
-      "notes": "Gets unread emails with 'STR | Confirm ID' in subject via Microsoft Graph API"
+      "notes": "Gets unread trip emails (New, Modified, Cancelled) via Microsoft Graph API"
     },
     {
       "parameters": {
@@ -73,18 +73,18 @@
     },
     {
       "parameters": {
-        "jsCode": "// Split the Graph API response array into individual email items\nconst emails = $input.first().json.value || [];\nconsole.log(`Found ${emails.length} unread trip email(s)`);\nreturn emails.map(email => ({ json: email }));"
+        "jsCode": "// Split emails and filter out already-processed ones\nconst emails = $input.first().json.value || [];\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst newEmails = emails.filter(e => !staticData.processedIds.includes(e.id));\nconsole.log(`Found ${emails.length} unread, ${newEmails.length} new (${emails.length - newEmails.length} already processed)`);\n\nif (newEmails.length === 0) return [];\nreturn newEmails.map(email => ({ json: email }));"
       },
       "id": "split-emails",
       "name": "Split Email List",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [800, -100],
-      "notes": "Splits the email array so each email is processed individually"
+      "notes": "Splits emails and skips already-processed IDs using workflow static data"
     },
     {
       "parameters": {
-        "jsCode": "// Extract and display key email details for monitoring\nconst email = $input.first().json;\nconsole.log(`Processing: ${email.subject}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments\n  }\n}];"
+        "jsCode": "// Extract email details and parse request type from subject\nconst email = $input.first().json;\nconst subject = email.subject || '';\n\n// Determine request type from subject line pattern\nlet requestType = 'New';\nif (/^STR\\s*\\(Modified\\)/i.test(subject)) {\n  requestType = 'Modified';\n} else if (/^STR\\s*\\(Cancell?ed\\)/i.test(subject)) {\n  requestType = 'Cancelled';\n}\n\n// Parse confirmId and tripCode from subject (needed for cancellation path)\nconst confirmIdMatch = subject.match(/Confirm\\s*ID[:\\s]+(\\d+)/i);\nconst confirmId = confirmIdMatch ? confirmIdMatch[1] : '';\nconst tripCodeMatch = subject.match(/\\|\\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\\s*\\|/i);\nconst tripCode = tripCodeMatch ? tripCodeMatch[1] : '';\n\nconsole.log(`Processing [${requestType}]: ${subject}`);\nconsole.log(`  Confirm ID: ${confirmId}, Trip Code: ${tripCode}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripCode\n  }\n}];"
       },
       "id": "log-email",
       "name": "Log Email Details",
@@ -187,7 +187,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build single row with students as comma-separated arrays\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\nconsole.log(`Formatting ${students.length} student(s) as arrays`);\n\nreturn [{\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: students.map(s => s.medicalNeeds || '').join(', '),\n    driveUrl: driveUrl,\n    emailReceived: receivedDateTime\n  }\n}];"
+        "jsCode": "// Build single row with students as comma-separated arrays\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\n// Get requestType from Log Email Details (New or Modified)\nconst requestType = $('Log Email Details').first().json.requestType || 'New';\n\nconsole.log(`Formatting ${students.length} student(s) as arrays [${requestType}]`);\n\nreturn [{\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: students.map(s => s.medicalNeeds || '').join(', '),\n    driveUrl: driveUrl,\n    requestType: requestType,\n    emailReceived: receivedDateTime\n  }\n}];"
       },
       "id": "expand-students",
       "name": "Format Sheet Row",
@@ -201,42 +201,19 @@
         "operation": "append",
         "documentId": {
           "__rl": true,
-          "value": "1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0",
-          "mode": "id"
+          "value": "https://docs.google.com/spreadsheets/d/1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0/edit?gid=1623775001#gid=1623775001",
+          "mode": "url"
         },
         "sheetName": {
           "__rl": true,
-          "value": "trip_details",
-          "mode": "name"
+          "value": "https://docs.google.com/spreadsheets/d/1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0/edit?gid=1623775001#gid=1623775001",
+          "mode": "url"
         },
         "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "A": "={{ $json.confirmId }}",
-            "B": "={{ $json.tripCode }}",
-            "C": "={{ $json.todaysDate }}",
-            "D": "={{ $json.overnightTrip }}",
-            "E": "={{ $json.startDate }}",
-            "F": "={{ $json.endDate }}",
-            "G": "={{ $json.startTime }}",
-            "H": "={{ $json.endTime }}",
-            "I": "={{ $json.destination }}",
-            "J": "={{ $json.schoolName }}",
-            "K": "={{ $json.address }}",
-            "L": "={{ $json.atsDbn }}",
-            "M": "={{ $json.district }}",
-            "N": "={{ $json.region }}",
-            "O": "={{ $json.requester }}",
-            "P": "={{ $json.phone1 }}",
-            "Q": "={{ $json.phone2 }}",
-            "R": "={{ $json.studentInitials }}",
-            "S": "={{ $json.studentId }}",
-            "T": "={{ $json.dob }}",
-            "U": "={{ $json.medicalNeeds }}",
-            "V": "={{ $json.driveUrl }}",
-            "W": "",
-            "X": "={{ $json.emailReceived }}"
-          }
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
         },
         "options": {}
       },
@@ -246,6 +223,17 @@
       "typeVersion": 4.5,
       "position": [2880, -200],
       "notes": "Appends one row per student to trip_details tab (columns A-X)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark this email as processed so it won't be re-processed next run\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst messageId = $('Log Email Details').first().json.messageId;\nif (messageId && !staticData.processedIds.includes(messageId)) {\n  staticData.processedIds.push(messageId);\n  // Keep only last 200 IDs to prevent unbounded growth\n  if (staticData.processedIds.length > 200) {\n    staticData.processedIds = staticData.processedIds.slice(-200);\n  }\n}\n\nconsole.log(`Marked ${messageId} as processed (${staticData.processedIds.length} total tracked)`);\nreturn $input.all();"
+      },
+      "id": "mark-processed",
+      "name": "Mark Processed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3140, -200],
+      "notes": "Stores processed messageId in workflow static data to prevent re-processing"
     },
     {
       "parameters": {
@@ -268,6 +256,41 @@
       "typeVersion": 2,
       "position": [2360, 0],
       "notes": "Logs error details when the Render processor fails. Email stays unread for retry."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "check-cancelled",
+              "leftValue": "={{ $json.requestType }}",
+              "rightValue": "Cancelled",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-cancellation",
+      "name": "Is Cancellation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, -100],
+      "notes": "Routes Cancelled emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a minimal row for cancelled trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\n\nconsole.log(`Formatting cancelled row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: 'Cancelled',\n    emailReceived: receivedDateTime\n  }\n}];"
+      },
+      "id": "format-cancelled-row",
+      "name": "Format Cancelled Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 80],
+      "notes": "Builds minimal sheet row for Cancelled trips: only Confirm ID, Trip Code, status=Cancelled, and email received timestamp."
     }
   ],
   "connections": {
@@ -294,7 +317,18 @@
     },
     "Log Email Details": {
       "main": [
+        [{ "node": "Is Cancellation?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Cancellation?": {
+      "main": [
+        [{ "node": "Format Cancelled Row", "type": "main", "index": 0 }],
         [{ "node": "Get Email Attachments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Cancelled Row": {
+      "main": [
+        [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
       ]
     },
     "Get Email Attachments": {
@@ -326,6 +360,11 @@
     "Format Sheet Row": {
       "main": [
         [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Write to Google Sheets": {
+      "main": [
+        [{ "node": "Mark Processed", "type": "main", "index": 0 }]
       ]
     }
   },
