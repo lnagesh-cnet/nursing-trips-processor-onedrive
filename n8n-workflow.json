@@ -3,84 +3,33 @@
   "nodes": [
     {
       "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "0 9-17 * * 1-5"
-            }
-          ]
-        }
-      },
-      "id": "schedule",
-      "name": "Hourly Schedule",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [0, 0],
-      "notes": "Runs every hour from 9AM to 5PM, Monday-Friday (EST)"
-    },
-    {
-      "parameters": {
-        "authentication": "genericCredentialType",
-        "genericAuthType": "oAuth2Api",
-        "method": "GET",
-        "url": "https://graph.microsoft.com/v1.0/users/lnagesh@comprehensivenet.com/messages",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            { "name": "$select", "value": "id,subject,hasAttachments,receivedDateTime,isRead" },
-            { "name": "$filter", "value": "contains(subject, 'Confirm ID') and startswith(subject, 'STR') and isRead eq false" },
-            { "name": "$top", "value": "50" }
-          ]
+        "pollTimes": {
+          "item": [{ "mode": "everyMinute" }]
         },
-        "options": {
-          "timeout": 30000
-        }
+        "output": "raw",
+        "filters": {
+          "readStatus": "unread",
+          "customFilter": "contains(subject, 'Confirm ID') and startswith(subject, 'STR')"
+        },
+        "options": {}
       },
-      "id": "fetch-emails",
-      "name": "Fetch Unread Trip Emails",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [280, 0],
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 5000,
-      "notes": "Gets unread trip emails (New, Modified, Cancelled) via Microsoft Graph API"
+      "id": "outlook-trigger",
+      "name": "New Trip Email",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "Polls every minute for unread STR trip emails (New, Modified, Cancelled). Requires Microsoft Outlook OAuth2 credential."
     },
     {
       "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "" },
-          "conditions": [
-            {
-              "id": "check-count",
-              "leftValue": "={{ $json.value.length }}",
-              "rightValue": "0",
-              "operator": {
-                "type": "number",
-                "operation": "gt"
-              }
-            }
-          ]
-        }
-      },
-      "id": "check-emails",
-      "name": "Any New Emails?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [540, 0],
-      "notes": "Checks if any unread trip emails were found"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Split emails and filter out already-processed ones\nconst emails = $input.first().json.value || [];\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst newEmails = emails.filter(e => !staticData.processedIds.includes(e.id));\nconsole.log(`Found ${emails.length} unread, ${newEmails.length} new (${emails.length - newEmails.length} already processed)`);\n\nif (newEmails.length === 0) return [];\nreturn newEmails.map(email => ({ json: email }));"
+        "jsCode": "// Dedup safety net — filter out already-processed emails\n// The Outlook Trigger tracks new-since-last-poll automatically,\n// but this prevents reprocessing if trigger re-delivers an email.\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst items = $input.all();\nconst newItems = items.filter(item => !staticData.processedIds.includes(item.json.id));\n\nconsole.log(`Received ${items.length} emails, ${newItems.length} new (${items.length - newItems.length} already processed)`);\n\nif (newItems.length === 0) return [];\nreturn newItems;"
       },
       "id": "split-emails",
       "name": "Split Email List",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, -100],
-      "notes": "Splits emails and skips already-processed IDs using workflow static data"
+      "position": [340, 0],
+      "notes": "Dedup safety net — skips emails already processed using workflow static data"
     },
     {
       "parameters": {
@@ -90,8 +39,43 @@
       "name": "Log Email Details",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1060, -100],
-      "notes": "Displays email subject, date, and attachment status for visibility"
+      "position": [680, 0],
+      "notes": "Parses request type (New/Modified/Cancelled), Confirm ID, and Trip Code from subject"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "check-cancelled",
+              "leftValue": "={{ $json.requestType }}",
+              "rightValue": "Cancelled",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-cancellation",
+      "name": "Is Cancellation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1020, 0],
+      "notes": "Routes Cancelled emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a minimal row for cancelled trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\n\nconsole.log(`Formatting cancelled row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: 'Cancelled',\n    emailReceived: receivedDateTime\n  }\n}];"
+      },
+      "id": "format-cancelled-row",
+      "name": "Format Cancelled Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 180],
+      "notes": "Builds minimal sheet row for Cancelled trips: only Confirm ID, Trip Code, status=Cancelled, and email received timestamp."
     },
     {
       "parameters": {
@@ -113,7 +97,7 @@
       "name": "Get Email Attachments",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1320, -100],
+      "position": [1360, -100],
       "retryOnFail": true,
       "maxTries": 2,
       "notes": "Fetches all attachments for this email from Microsoft Graph"
@@ -126,7 +110,7 @@
       "name": "Find Securedoc Attachment",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1580, -100],
+      "position": [1620, -100],
       "notes": "Identifies the 'securedoc' HTML file from the attachment list"
     },
     {
@@ -144,7 +128,7 @@
       "name": "Send to Render Processor",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1840, -100],
+      "position": [1880, -100],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 10000,
@@ -171,7 +155,7 @@
       "name": "Processing OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2100, -100],
+      "position": [2140, -100],
       "notes": "Checks if the Render processor returned success"
     },
     {
@@ -182,7 +166,7 @@
       "name": "Log Trip Fields",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2360, -200],
+      "position": [2400, -200],
       "notes": "Shows extracted trip data: Confirm ID, Trip Code, destination, school, dates, student count"
     },
     {
@@ -193,7 +177,7 @@
       "name": "Format Sheet Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2620, -200],
+      "position": [2660, -200],
       "notes": "Builds single row with students as comma-separated arrays (columns R-U)"
     },
     {
@@ -221,8 +205,8 @@
       "name": "Write to Google Sheets",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [2880, -200],
-      "notes": "Appends one row per student to trip_details tab (columns A-X)"
+      "position": [2920, -200],
+      "notes": "Appends one row per trip to trip_details tab"
     },
     {
       "parameters": {
@@ -232,19 +216,8 @@
       "name": "Mark Processed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3140, -200],
+      "position": [3180, -200],
       "notes": "Stores processed messageId in workflow static data to prevent re-processing"
-    },
-    {
-      "parameters": {
-        "jsCode": "// No unread trip emails found\nconsole.log('No new nursing trip emails to process');\nreturn [{ json: { message: 'No new nursing trip emails found', timestamp: new Date().toISOString() } }];"
-      },
-      "id": "no-emails",
-      "name": "No New Emails",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [800, 120],
-      "notes": "Logs when no unread trip emails are found"
     },
     {
       "parameters": {
@@ -254,60 +227,14 @@
       "name": "Processing Failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2360, 0],
+      "position": [2400, 0],
       "notes": "Logs error details when the Render processor fails. Email stays unread for retry."
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": false, "leftValue": "" },
-          "conditions": [
-            {
-              "id": "check-cancelled",
-              "leftValue": "={{ $json.requestType }}",
-              "rightValue": "Cancelled",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
-            }
-          ]
-        }
-      },
-      "id": "check-cancellation",
-      "name": "Is Cancellation?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1200, -100],
-      "notes": "Routes Cancelled emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
-    },
-    {
-      "parameters": {
-        "jsCode": "// Build a minimal row for cancelled trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\n\nconsole.log(`Formatting cancelled row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: 'Cancelled',\n    emailReceived: receivedDateTime\n  }\n}];"
-      },
-      "id": "format-cancelled-row",
-      "name": "Format Cancelled Row",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1440, 80],
-      "notes": "Builds minimal sheet row for Cancelled trips: only Confirm ID, Trip Code, status=Cancelled, and email received timestamp."
     }
   ],
   "connections": {
-    "Hourly Schedule": {
+    "New Trip Email": {
       "main": [
-        [{ "node": "Fetch Unread Trip Emails", "type": "main", "index": 0 }]
-      ]
-    },
-    "Fetch Unread Trip Emails": {
-      "main": [
-        [{ "node": "Any New Emails?", "type": "main", "index": 0 }]
-      ]
-    },
-    "Any New Emails?": {
-      "main": [
-        [{ "node": "Split Email List", "type": "main", "index": 0 }],
-        [{ "node": "No New Emails", "type": "main", "index": 0 }]
+        [{ "node": "Split Email List", "type": "main", "index": 0 }]
       ]
     },
     "Split Email List": {
