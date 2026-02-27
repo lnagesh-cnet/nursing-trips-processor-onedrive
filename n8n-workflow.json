@@ -9,7 +9,7 @@
         "output": "raw",
         "filters": {
           "readStatus": "unread",
-          "customFilter": "contains(subject, 'Confirm ID') and startswith(subject, 'STR')"
+          "customFilter": "contains(subject, 'Confirm ID') and contains(subject, 'STR')"
         },
         "options": {}
       },
@@ -33,7 +33,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Extract email details and parse request type from subject\nconst email = $input.first().json;\nconst subject = email.subject || '';\n\n// Determine request type from subject line pattern\nlet requestType = 'New';\nif (/^STR\\s*\\(Modified\\)/i.test(subject)) {\n  requestType = 'Modified';\n} else if (/^STR\\s*\\(Cancell?ed\\)/i.test(subject)) {\n  requestType = 'Cancelled';\n}\n\n// Parse confirmId and tripCode from subject (needed for cancellation path)\nconst confirmIdMatch = subject.match(/Confirm\\s*ID[:\\s]+(\\d+)/i);\nconst confirmId = confirmIdMatch ? confirmIdMatch[1] : '';\nconst tripCodeMatch = subject.match(/\\|\\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\\s*\\|/i);\nconst tripCode = tripCodeMatch ? tripCodeMatch[1] : '';\n\nconsole.log(`Processing [${requestType}]: ${subject}`);\nconsole.log(`  Confirm ID: ${confirmId}, Trip Code: ${tripCode}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripCode\n  }\n}];"
+        "jsCode": "// Extract email details and parse request type from subject\nconst email = $input.first().json;\nconst subject = email.subject || '';\n\n// Determine request type from subject line pattern\n// Check Re: prefix FIRST (follow-ups), then Modified/Cancelled, else New\nlet requestType = 'New';\nif (/^Re:\\s/i.test(subject)) {\n  requestType = 'Follow-up';\n} else if (/^STR\\s*\\(Modified\\)/i.test(subject)) {\n  requestType = 'Modified';\n} else if (/^STR\\s*\\(Cancell?ed\\)/i.test(subject)) {\n  requestType = 'Cancelled';\n}\n\n// Parse confirmId and tripCode from subject (works for all types including Re:)\nconst confirmIdMatch = subject.match(/Confirm\\s*ID[:\\s]+(\\d+)/i);\nconst confirmId = confirmIdMatch ? confirmIdMatch[1] : '';\nconst tripCodeMatch = subject.match(/\\|\\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\\s*\\|/i);\nconst tripCode = tripCodeMatch ? tripCodeMatch[1] : '';\n\nconsole.log(`Processing [${requestType}]: ${subject}`);\nconsole.log(`  Confirm ID: ${confirmId}, Trip Code: ${tripCode}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripCode\n  }\n}];"
       },
       "id": "log-email",
       "name": "Log Email Details",
@@ -46,6 +46,7 @@
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": false, "leftValue": "" },
+          "combinator": "or",
           "conditions": [
             {
               "id": "check-cancelled",
@@ -55,27 +56,36 @@
                 "type": "string",
                 "operation": "equals"
               }
+            },
+            {
+              "id": "check-followup",
+              "leftValue": "={{ $json.requestType }}",
+              "rightValue": "Follow-up",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ]
         }
       },
       "id": "check-cancellation",
-      "name": "Is Cancellation?",
+      "name": "Skip PDF?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [1020, 0],
-      "notes": "Routes Cancelled emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
+      "notes": "Routes Cancelled and Follow-up emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
     },
     {
       "parameters": {
-        "jsCode": "// Build a minimal row for cancelled trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\n\nconsole.log(`Formatting cancelled row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: 'Cancelled',\n    emailReceived: receivedDateTime\n  }\n}];"
+        "jsCode": "// Build a minimal row for Cancelled or Follow-up trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\nconst requestType = item.requestType || 'Cancelled';\n\nconsole.log(`Formatting ${requestType} row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: requestType,\n    emailReceived: receivedDateTime\n  }\n}];"
       },
       "id": "format-cancelled-row",
-      "name": "Format Cancelled Row",
+      "name": "Format Minimal Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1360, 180],
-      "notes": "Builds minimal sheet row for Cancelled trips: only Confirm ID, Trip Code, status=Cancelled, and email received timestamp."
+      "notes": "Builds minimal sheet row for Cancelled/Follow-up: Confirm ID, Trip Code, requestType, and email received timestamp."
     },
     {
       "parameters": {
@@ -244,16 +254,16 @@
     },
     "Log Email Details": {
       "main": [
-        [{ "node": "Is Cancellation?", "type": "main", "index": 0 }]
+        [{ "node": "Skip PDF?", "type": "main", "index": 0 }]
       ]
     },
-    "Is Cancellation?": {
+    "Skip PDF?": {
       "main": [
-        [{ "node": "Format Cancelled Row", "type": "main", "index": 0 }],
+        [{ "node": "Format Minimal Row", "type": "main", "index": 0 }],
         [{ "node": "Get Email Attachments", "type": "main", "index": 0 }]
       ]
     },
-    "Format Cancelled Row": {
+    "Format Minimal Row": {
       "main": [
         [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
       ]
