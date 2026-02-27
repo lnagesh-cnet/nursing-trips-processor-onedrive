@@ -78,7 +78,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build a minimal row for Cancelled or Follow-up trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\nconst requestType = item.requestType || 'Cancelled';\n\nconsole.log(`Formatting ${requestType} row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    driveUrl: '',\n    requestType: requestType,\n    emailReceived: receivedDateTime\n  }\n}];"
+        "jsCode": "// Build a minimal row for Cancelled or Follow-up trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\nconst requestType = item.requestType || 'Cancelled';\n\n// Convert ISO date to EST format\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\nconsole.log(`Formatting ${requestType} row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: '',\n    requestType: requestType,\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: ''\n  }\n}];"
       },
       "id": "format-cancelled-row",
       "name": "Format Minimal Row",
@@ -114,14 +114,63 @@
     },
     {
       "parameters": {
-        "jsCode": "// Find the securedoc HTML attachment\nconst attachments = $input.first().json.value || [];\nconst securedoc = attachments.find(a =>\n  (a.name || '').toLowerCase().includes('securedoc')\n);\n\nif (!securedoc) {\n  console.log('No securedoc attachment found — skipping email');\n  return [];  // Empty = skip downstream nodes\n}\n\nconst emailInfo = $('Log Email Details').first().json;\nconsole.log(`Found: ${securedoc.name} (${(securedoc.size / 1024).toFixed(1)} KB)`);\n\nreturn [{\n  json: {\n    messageId: emailInfo.messageId,\n    emailSubject: emailInfo.subject,\n    receivedDateTime: emailInfo.receivedDateTime,\n    attachmentId: securedoc.id,\n    attachmentName: securedoc.name,\n    attachmentSize: securedoc.size\n  }\n}];"
+        "fieldToSplitOut": "value",
+        "options": {}
       },
-      "id": "find-securedoc",
-      "name": "Find Securedoc Attachment",
-      "type": "n8n-nodes-base.code",
+      "id": "split-attachments",
+      "name": "Split Attachments",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1490, -100],
+      "notes": "Splits the Graph API attachment array into individual items"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "filter-securedoc",
+              "leftValue": "={{ $json.name }}",
+              "rightValue": "securedoc",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ]
+        }
+      },
+      "id": "filter-securedoc",
+      "name": "Filter Securedoc",
+      "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
       "position": [1620, -100],
-      "notes": "Identifies the 'securedoc' HTML file from the attachment list"
+      "notes": "Keeps only the securedoc HTML attachment. If none found, downstream nodes are skipped."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "id": "set-messageId", "name": "messageId", "value": "={{ $('Log Email Details').item.json.messageId }}", "type": "string" },
+            { "id": "set-emailSubject", "name": "emailSubject", "value": "={{ $('Log Email Details').item.json.subject }}", "type": "string" },
+            { "id": "set-receivedDateTime", "name": "receivedDateTime", "value": "={{ $('Log Email Details').item.json.receivedDateTime }}", "type": "string" },
+            { "id": "set-attachmentId", "name": "attachmentId", "value": "={{ $json.id }}", "type": "string" },
+            { "id": "set-attachmentName", "name": "attachmentName", "value": "={{ $json.name }}", "type": "string" },
+            { "id": "set-attachmentSize", "name": "attachmentSize", "value": "={{ $json.size }}", "type": "number" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-attachment-info",
+      "name": "Set Attachment Info",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1750, -100],
+      "notes": "Restructures output with messageId, emailSubject, receivedDateTime from email + attachment details"
     },
     {
       "parameters": {
@@ -170,7 +219,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Display the extracted trip fields for monitoring\nconst data = $input.first().json;\nconst trip = data.tripFields || {};\nconst studentCount = (data.students || []).length;\n\nconsole.log(`Trip: ${trip.confirmId} | ${trip.tripCode} | ${trip.destination}`);\nconsole.log(`Students: ${studentCount}`);\n\nreturn [{\n  json: {\n    confirmId: trip.confirmId || '',\n    tripCode: trip.tripCode || '',\n    destination: trip.destination || '',\n    schoolName: trip.schoolName || '',\n    startDate: trip.startDate || '',\n    endDate: trip.endDate || '',\n    startTime: trip.startTime || '',\n    endTime: trip.endTime || '',\n    overnightTrip: trip.overnightTrip || '',\n    studentCount: studentCount,\n    driveUrl: data.driveUrl || '',\n    pdfFilename: data.pdfFilename || '',\n    // Pass through full data for next nodes\n    _fullResponse: data\n  }\n}];"
+        "jsCode": "// Display the extracted trip fields for monitoring\nconst data = $input.first().json;\nconst trip = data.tripFields || {};\nconst studentCount = (data.students || []).length;\n\nconsole.log(`Trip: ${trip.confirmId} | ${trip.tripCode} | ${trip.destination}`);\nconsole.log(`Students: ${studentCount}`);\n\nreturn [{\n  json: {\n    confirmId: trip.confirmId || '',\n    tripCode: trip.tripCode || '',\n    destination: trip.destination || '',\n    schoolName: trip.schoolName || '',\n    startDate: trip.startDate || '',\n    endDate: trip.endDate || '',\n    startTime: trip.startTime || '',\n    endTime: trip.endTime || '',\n    overnightTrip: trip.overnightTrip || '',\n    studentCount: studentCount,\n    pdfLink: data.driveUrl || '',\n    pdfFilename: data.pdfFilename || '',\n    // Pass through full data for next nodes\n    _fullResponse: data\n  }\n}];"
       },
       "id": "log-trip",
       "name": "Log Trip Fields",
@@ -181,7 +230,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build single row with students as comma-separated arrays\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst driveUrl = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Find Securedoc Attachment').first().json.receivedDateTime || '';\n\n// Get requestType from Log Email Details (New or Modified)\nconst requestType = $('Log Email Details').first().json.requestType || 'New';\n\nconsole.log(`Formatting ${students.length} student(s) as arrays [${requestType}]`);\n\nreturn [{\n  json: {\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: students.map(s => s.medicalNeeds || '').join(', '),\n    driveUrl: driveUrl,\n    requestType: requestType,\n    emailReceived: receivedDateTime\n  }\n}];"
+        "jsCode": "// Build single row with students as comma-separated arrays\nconst item = $input.first().json;\nconst data = item._fullResponse || item;\nconst tripFields = data.tripFields || {};\nconst students = data.students || [];\nconst pdfLink = data.driveUrl || item.driveUrl || '';\nconst receivedDateTime = $('Set Attachment Info').first().json.receivedDateTime || '';\n\n// Convert ISO date to EST format\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\n// Get requestType from Log Email Details (New or Modified)\nconst requestType = $('Log Email Details').first().json.requestType || 'New';\n\nconsole.log(`Formatting ${students.length} student(s) as arrays [${requestType}]`);\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: pdfLink,\n    requestType: requestType,\n    confirmId: tripFields.confirmId || '',\n    tripCode: tripFields.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || '',\n    phone2: tripFields.phone2 || '',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: students.map(s => s.medicalNeeds || '').join(', ')\n  }\n}];"
       },
       "id": "expand-students",
       "name": "Format Sheet Row",
@@ -231,7 +280,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Log the processing failure details\nconst result = $input.first().json;\nconst emailInfo = $('Find Securedoc Attachment').first().json;\n\nconsole.error(`FAILED: ${emailInfo.emailSubject}`);\nconsole.error(`Error: ${result.error || 'Unknown error'}`);\n\nreturn [{\n  json: {\n    status: 'FAILED',\n    emailSubject: emailInfo.emailSubject,\n    messageId: emailInfo.messageId,\n    error: result.error || 'Unknown processing error',\n    elapsed: result.elapsed || '',\n    timestamp: new Date().toISOString()\n  }\n}];"
+        "jsCode": "// Log the processing failure details\nconst result = $input.first().json;\nconst emailInfo = $('Set Attachment Info').first().json;\n\nconsole.error(`FAILED: ${emailInfo.emailSubject}`);\nconsole.error(`Error: ${result.error || 'Unknown error'}`);\n\nreturn [{\n  json: {\n    status: 'FAILED',\n    emailSubject: emailInfo.emailSubject,\n    messageId: emailInfo.messageId,\n    error: result.error || 'Unknown processing error',\n    elapsed: result.elapsed || '',\n    timestamp: new Date().toISOString()\n  }\n}];"
       },
       "id": "processing-failed",
       "name": "Processing Failed",
@@ -270,10 +319,20 @@
     },
     "Get Email Attachments": {
       "main": [
-        [{ "node": "Find Securedoc Attachment", "type": "main", "index": 0 }]
+        [{ "node": "Split Attachments", "type": "main", "index": 0 }]
       ]
     },
-    "Find Securedoc Attachment": {
+    "Split Attachments": {
+      "main": [
+        [{ "node": "Filter Securedoc", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Securedoc": {
+      "main": [
+        [{ "node": "Set Attachment Info", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set Attachment Info": {
       "main": [
         [{ "node": "Send to Render Processor", "type": "main", "index": 0 }]
       ]
