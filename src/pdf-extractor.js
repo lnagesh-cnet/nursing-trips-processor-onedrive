@@ -86,7 +86,7 @@ export function buildFieldsObject(text, kvMap, titleMetadata, emailSubject, meth
                    || pick(text, /Phone\s*1[:\s]+([\d\-\(\)\s]+)/i);
 
   fields.phone2    = kv(kvMap, ['phone_2','phone2'])
-                   || pick(text, /Phone\s*2[:\s]+([\d\-\(\)\s]*)/i);
+                   || pick(text, /Phone\s*2[:\s]+([\d\-\(\)\s\.+]+)/i);
 
   fields.comments  = kv(kvMap, ['comments'])
                    || pick(text, /Comments[:\s]*\n(.+)/i) || '';

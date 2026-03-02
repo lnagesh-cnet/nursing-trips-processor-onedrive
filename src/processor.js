@@ -253,7 +253,7 @@ async function uploadToDrive(pdfPath, filename, tripDate) {
  */
 function parseEmailSubject(subject) {
   const confirmMatch = subject.match(/Confirm ID:\s*(\d+)/i);
-  const tripCodeMatch = subject.match(/\|\s*([A-Z0-9]+)\s*\|/);
+  const tripCodeMatch = subject.match(/\|\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\s*\|/i);
 
   return {
     confirmId: confirmMatch ? confirmMatch[1] : null,
