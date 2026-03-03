@@ -1,5 +1,5 @@
 {
-  "name": "Nursing Trips Automation",
+  "name": "Nursing Trips Automation (OneDrive)",
   "nodes": [
     {
       "parameters": {
@@ -175,7 +175,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://nursing-trips-processor.onrender.com/process",
+        "url": "https://nursing-trips-processor-onedrive.onrender.com/process",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"messageId\": \"{{ $json.messageId }}\",\n  \"attachmentId\": \"{{ $json.attachmentId }}\",\n  \"emailSubject\": \"{{ $json.emailSubject }}\"\n}",

@@ -1,23 +1,34 @@
-import { google } from 'googleapis';
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { downloadPdfFromForm } from './browser-automation.js';
 import { buildFieldsObject, parseStudentTable } from './pdf-extractor.js';
 
-// Decode Google service account credentials from base64 env var (for Render deployment)
-if (process.env.GOOGLE_CREDENTIALS_BASE64 && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  const credPath = path.join(os.tmpdir(), 'google-credentials.json');
-  fs.writeFileSync(credPath, Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64'));
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
-  console.log('[PROCESSOR] Google credentials decoded from GOOGLE_CREDENTIALS_BASE64');
+/**
+ * Get a Microsoft Graph API access token using client credentials flow.
+ * Reused for both email attachment fetching and OneDrive upload.
+ */
+async function getMsGraphToken() {
+  const tokenResp = await fetch(
+    `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: process.env.MS_CLIENT_ID,
+        client_secret: process.env.MS_CLIENT_SECRET,
+        scope: 'https://graph.microsoft.com/.default'
+      })
+    }
+  );
+  const tokenData = await tokenResp.json();
+  if (!tokenData.access_token) throw new Error('Failed to get MS Graph token');
+  return tokenData.access_token;
 }
 
-const drive = google.drive('v3');
-const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID || '19vqYbaZ9sljtROSlVIZFnp5IaTGroyHT';
-
 /**
- * Main processor with pdf-parse field extraction and Google Drive upload
+ * Main processor with pdf-parse field extraction and OneDrive upload
  */
 export async function processSecureEmail({ htmlContent, htmlBase64, messageId, attachmentId, emailSubject }) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nursing-trip-'));
@@ -31,26 +42,11 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     if (!htmlContent && !htmlBase64 && messageId && attachmentId) {
       console.log('[PROCESSOR] Fetching attachment from Graph API...');
 
-      const tokenResp = await fetch(
-        `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'client_credentials',
-            client_id: process.env.MS_CLIENT_ID,
-            client_secret: process.env.MS_CLIENT_SECRET,
-            scope: 'https://graph.microsoft.com/.default'
-          })
-        }
-      );
-      const tokenData = await tokenResp.json();
-      if (!tokenData.access_token) throw new Error('Failed to get MS token');
-
+      const token = await getMsGraphToken();
       const userEmail = process.env.MS_USER_EMAIL;
       const attachUrl = `https://graph.microsoft.com/v1.0/users/${userEmail}/messages/${messageId}/attachments/${attachmentId}/$value`;
       const attachResp = await fetch(attachUrl, {
-        headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!attachResp.ok) throw new Error(`Graph fetch failed: ${attachResp.status}`);
 
@@ -81,12 +77,11 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     const metadata = parseEmailSubject(emailSubject || '');
     const pdfFilename = `${metadata.tripCode || 'UNKNOWN'}_${metadata.confirmId || Date.now()}.pdf`;
 
-    // ===== STEP 6: Upload PDF to Google Drive (organized by year/month) =====
-    console.log('[PROCESSOR] Uploading to Google Drive...');
+    // ===== STEP 6: Upload PDF to OneDrive (organized by year/month) =====
+    console.log('[PROCESSOR] Uploading to OneDrive...');
     const tripDate = extractedData.tripFields.startDate || extractedData.tripFields.todaysDate || '';
-    const driveFileId = await uploadToDrive(pdfPath, pdfFilename, tripDate);
-    const driveUrl = `https://drive.google.com/file/d/${driveFileId}/view`;
-    console.log('[PROCESSOR] Uploaded to Drive:', driveUrl);
+    const driveUrl = await uploadToOneDrive(pdfPath, pdfFilename, tripDate);
+    console.log('[PROCESSOR] Uploaded to OneDrive:', driveUrl);
 
     // ===== STEP 7: Clean up =====
     await fs.remove(tmpDir);
@@ -94,7 +89,6 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     return {
       success: true,
       driveUrl,
-      driveFileId,
       pdfFilename,
       tripFields: {
         ...metadata,
@@ -152,47 +146,14 @@ async function extractFieldsWithPdfParse(pdfPath, emailSubject = '') {
 }
 
 /**
- * Find or create a subfolder inside a parent folder
+ * Upload PDF to OneDrive organized by year/month.
+ * Uses Microsoft Graph API PUT endpoint which auto-creates folders.
+ * Requires Files.ReadWrite.All application permission on the Azure app.
  */
-async function findOrCreateFolder(name, parentId) {
-  // Search for existing folder
-  const query = `name='${name}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const list = await drive.files.list({
-    q: query,
-    fields: 'files(id,name)',
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
-
-  if (list.data.files.length > 0) {
-    console.log(`[DRIVE] Found existing folder: ${name}`);
-    return list.data.files[0].id;
-  }
-
-  // Create new folder
-  const folder = await drive.files.create({
-    requestBody: {
-      name,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: [parentId],
-    },
-    fields: 'id',
-    supportsAllDrives: true,
-  });
-  console.log(`[DRIVE] Created folder: ${name}`);
-  return folder.data.id;
-}
-
-/**
- * Upload PDF to Google Drive organized by year/month
- */
-async function uploadToDrive(pdfPath, filename, tripDate) {
-  const auth = new google.auth.GoogleAuth({
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
-  });
-
-  const authClient = await auth.getClient();
-  google.options({ auth: authClient });
+async function uploadToOneDrive(pdfPath, filename, tripDate) {
+  const token = await getMsGraphToken();
+  const userEmail = process.env.ONEDRIVE_USER_EMAIL || process.env.MS_USER_EMAIL;
+  const basePath = process.env.ONEDRIVE_FOLDER_PATH || 'Nursing Trip PDFs';
 
   // Determine year and month from trip date (MM/DD/YYYY format)
   const monthNames = ['January','February','March','April','May','June',
@@ -208,43 +169,59 @@ async function uploadToDrive(pdfPath, filename, tripDate) {
     month = monthNames[now.getMonth()];
   }
 
-  // Create folder structure: DRIVE_FOLDER_ID / 2026 / February
-  const yearFolderId = await findOrCreateFolder(year, DRIVE_FOLDER_ID);
-  const monthFolderId = await findOrCreateFolder(month, yearFolderId);
-  console.log(`[DRIVE] Uploading to ${year}/${month}/`);
+  // Upload PDF — Graph API auto-creates intermediate folders
+  const filePath = `${basePath}/${year}/${month}/${filename}`;
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  const uploadUrl = `https://graph.microsoft.com/v1.0/users/${userEmail}/drive/root:/${encodedPath}:/content`;
 
-  const fileMetadata = {
-    name: filename,
-    parents: [monthFolderId],
-  };
+  console.log(`[ONEDRIVE] Uploading to ${year}/${month}/`);
+  const fileBuffer = await fs.readFile(pdfPath);
 
-  const media = {
-    mimeType: 'application/pdf',
-    body: fs.createReadStream(pdfPath),
-  };
-
-  const response = await drive.files.create({
-    requestBody: fileMetadata,
-    media: media,
-    fields: 'id',
-    supportsAllDrives: true,
+  const uploadResp = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/pdf'
+    },
+    body: fileBuffer
   });
 
-  // Make file accessible to anyone with link (skip if folder already shares)
-  try {
-    await drive.permissions.create({
-      fileId: response.data.id,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone',
-      },
-      supportsAllDrives: true,
-    });
-  } catch (permErr) {
-    console.log('[DRIVE] Permission already inherited from parent folder, skipping');
+  if (!uploadResp.ok) {
+    const errText = await uploadResp.text();
+    throw new Error(`OneDrive upload failed (${uploadResp.status}): ${errText}`);
   }
 
-  return response.data.id;
+  const fileData = await uploadResp.json();
+  console.log(`[ONEDRIVE] File created: ${fileData.name} (${fileData.size} bytes)`);
+
+  // Create a sharing link so the N8n workflow can store a viewable URL
+  try {
+    const shareResp = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${userEmail}/drive/items/${fileData.id}/createLink`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          type: 'view',
+          scope: 'organization'
+        })
+      }
+    );
+
+    if (shareResp.ok) {
+      const shareData = await shareResp.json();
+      console.log('[ONEDRIVE] Sharing link created');
+      return shareData.link.webUrl;
+    }
+  } catch (shareErr) {
+    console.log('[ONEDRIVE] Could not create sharing link:', shareErr.message);
+  }
+
+  // Fallback to the file's webUrl if sharing link creation fails
+  return fileData.webUrl;
 }
 
 /**

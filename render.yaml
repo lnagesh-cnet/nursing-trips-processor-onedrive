@@ -1,15 +1,11 @@
 services:
   - type: web
-    name: nursing-trips-processor
+    name: nursing-trips-processor-onedrive
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: standard
     healthCheckPath: /
     envVars:
-      - key: GOOGLE_CREDENTIALS_BASE64
-        sync: false
-      - key: DRIVE_FOLDER_ID
-        value: 19vqYbaZ9sljtROSlVIZFnp5IaTGroyHT
       - key: MS_TENANT_ID
         sync: false
       - key: MS_CLIENT_ID
@@ -18,5 +14,9 @@ services:
         sync: false
       - key: MS_USER_EMAIL
         value: lnagesh@comprehensivenet.com
+      - key: ONEDRIVE_USER_EMAIL
+        value: lnagesh@comprehensivenet.com
+      - key: ONEDRIVE_FOLDER_PATH
+        value: Nursing Trip PDFs
       - key: PORT
         value: "10000"

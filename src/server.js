@@ -9,7 +9,7 @@ app.use(express.json({ limit: '50mb' }));
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'nursing-trips-processor' });
+  res.json({ status: 'ok', service: 'nursing-trips-processor-onedrive' });
 });
 
 /**
@@ -49,5 +49,5 @@ app.post('/process', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`[SERVER] Nursing Trips Processor running on port ${PORT}`);
   console.log(`[SERVER] PDF extraction: pdf-parse + regex (on-server, no cloud AI)`);
-  console.log(`[SERVER] Google Drive: ${process.env.DRIVE_FOLDER_ID || process.env.GOOGLE_CREDENTIALS_BASE64 ? 'configured' : 'NOT SET'}`);
+  console.log(`[SERVER] OneDrive: ${process.env.MS_CLIENT_ID ? 'configured' : 'NOT SET'}`);
 });
