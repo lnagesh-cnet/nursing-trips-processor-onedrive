@@ -288,6 +288,27 @@
       "typeVersion": 2,
       "position": [2400, 0],
       "notes": "Logs error details when the Render processor fails. Email stays unread for retry."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://nursing-trips-processor-onedrive.onrender.com/append-row",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "write-sharepoint-excel",
+      "name": "Backup to SharePoint Excel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3180, -400],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "notes": "Backup: appends the same row data to a SharePoint Excel workbook (TripDetails table) via the Render processor /append-row endpoint."
     }
   ],
   "connections": {
@@ -360,7 +381,10 @@
     },
     "Write to Google Sheets": {
       "main": [
-        [{ "node": "Mark Processed", "type": "main", "index": 0 }]
+        [
+          { "node": "Backup to SharePoint Excel", "type": "main", "index": 0 },
+          { "node": "Mark Processed", "type": "main", "index": 0 }
+        ]
       ]
     }
   },

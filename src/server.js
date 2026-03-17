@@ -1,5 +1,5 @@
 import express from 'express';
-import { processSecureEmail } from './processor.js';
+import { processSecureEmail, appendToSharePointExcel } from './processor.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -46,8 +46,38 @@ app.post('/process', async (req, res) => {
   }
 });
 
+/**
+ * Append a row to the SharePoint Excel backup workbook.
+ * Called by N8n after formatting the full row (same data as Google Sheets).
+ *
+ * Request body: the full row object with all 28 columns.
+ */
+app.post('/append-row', async (req, res) => {
+  const startTime = Date.now();
+  console.log('[SERVER] Received /append-row request');
+
+  const rowData = req.body;
+  if (!rowData || typeof rowData !== 'object') {
+    return res.status(400).json({ success: false, error: 'Request body must be a JSON object with row data' });
+  }
+
+  try {
+    await appendToSharePointExcel(rowData);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[SERVER] Excel append done in ${elapsed}s`);
+    res.json({ success: true, elapsed: `${elapsed}s` });
+  } catch (error) {
+    console.error('[SERVER] Excel append error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      elapsed: `${((Date.now() - startTime) / 1000).toFixed(1)}s`
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[SERVER] Nursing Trips Processor running on port ${PORT}`);
   console.log(`[SERVER] PDF extraction: pdf-parse + regex (on-server, no cloud AI)`);
-  console.log(`[SERVER] OneDrive: ${process.env.MS_CLIENT_ID ? 'configured' : 'NOT SET'}`);
+  console.log(`[SERVER] SharePoint: ${process.env.SP_DRIVE_ID ? 'configured' : 'NOT SET'}`);
 });

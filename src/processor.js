@@ -6,7 +6,7 @@ import { buildFieldsObject, parseStudentTable } from './pdf-extractor.js';
 
 /**
  * Get a Microsoft Graph API access token using client credentials flow.
- * Reused for both email attachment fetching and OneDrive upload.
+ * Reused for email attachment fetching, SharePoint upload, and Excel append.
  */
 async function getMsGraphToken() {
   const tokenResp = await fetch(
@@ -28,7 +28,7 @@ async function getMsGraphToken() {
 }
 
 /**
- * Main processor with pdf-parse field extraction and OneDrive upload
+ * Main processor with pdf-parse field extraction and SharePoint upload
  */
 export async function processSecureEmail({ htmlContent, htmlBase64, messageId, attachmentId, emailSubject }) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nursing-trip-'));
@@ -77,11 +77,11 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     const metadata = parseEmailSubject(emailSubject || '');
     const pdfFilename = `${metadata.tripCode || 'UNKNOWN'}_${metadata.confirmId || Date.now()}.pdf`;
 
-    // ===== STEP 6: Upload PDF to OneDrive (organized by year/month) =====
-    console.log('[PROCESSOR] Uploading to OneDrive...');
+    // ===== STEP 6: Upload PDF to SharePoint (organized by year/month) =====
+    console.log('[PROCESSOR] Uploading to SharePoint...');
     const tripDate = extractedData.tripFields.startDate || extractedData.tripFields.todaysDate || '';
-    const driveUrl = await uploadToOneDrive(pdfPath, pdfFilename, tripDate);
-    console.log('[PROCESSOR] Uploaded to OneDrive:', driveUrl);
+    const driveUrl = await uploadToSharePoint(pdfPath, pdfFilename, tripDate);
+    console.log('[PROCESSOR] Uploaded to SharePoint:', driveUrl);
 
     // ===== STEP 7: Clean up =====
     await fs.remove(tmpDir);
@@ -146,14 +146,20 @@ async function extractFieldsWithPdfParse(pdfPath, emailSubject = '') {
 }
 
 /**
- * Upload PDF to OneDrive organized by year/month.
+ * Upload PDF to SharePoint document library organized by year/month.
  * Uses Microsoft Graph API PUT endpoint which auto-creates folders.
- * Requires Files.ReadWrite.All application permission on the Azure app.
+ * Requires Sites.ReadWrite.All + Files.ReadWrite.All application permissions.
+ *
+ * SharePoint path: Nursing Trips/PDFs/{Year}/{Month}/{filename}.pdf
  */
-async function uploadToOneDrive(pdfPath, filename, tripDate) {
+async function uploadToSharePoint(pdfPath, filename, tripDate) {
   const token = await getMsGraphToken();
-  const userEmail = process.env.ONEDRIVE_USER_EMAIL || process.env.MS_USER_EMAIL;
-  const basePath = process.env.ONEDRIVE_FOLDER_PATH || 'Nursing Trip PDFs';
+  const driveId = process.env.SP_DRIVE_ID;
+  const basePath = process.env.SP_PDF_BASE_PATH || 'Nursing Trips/PDFs';
+
+  if (!driveId) {
+    throw new Error('SP_DRIVE_ID not set — run setup-sharepoint.js first');
+  }
 
   // Determine year and month from trip date (MM/DD/YYYY format)
   const monthNames = ['January','February','March','April','May','June',
@@ -172,9 +178,9 @@ async function uploadToOneDrive(pdfPath, filename, tripDate) {
   // Upload PDF — Graph API auto-creates intermediate folders
   const filePath = `${basePath}/${year}/${month}/${filename}`;
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-  const uploadUrl = `https://graph.microsoft.com/v1.0/users/${userEmail}/drive/root:/${encodedPath}:/content`;
+  const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/content`;
 
-  console.log(`[ONEDRIVE] Uploading to ${year}/${month}/`);
+  console.log(`[SHAREPOINT] Uploading to ${year}/${month}/`);
   const fileBuffer = await fs.readFile(pdfPath);
 
   const uploadResp = await fetch(uploadUrl, {
@@ -188,16 +194,16 @@ async function uploadToOneDrive(pdfPath, filename, tripDate) {
 
   if (!uploadResp.ok) {
     const errText = await uploadResp.text();
-    throw new Error(`OneDrive upload failed (${uploadResp.status}): ${errText}`);
+    throw new Error(`SharePoint upload failed (${uploadResp.status}): ${errText}`);
   }
 
   const fileData = await uploadResp.json();
-  console.log(`[ONEDRIVE] File created: ${fileData.name} (${fileData.size} bytes)`);
+  console.log(`[SHAREPOINT] File created: ${fileData.name} (${fileData.size} bytes)`);
 
   // Create a sharing link so the N8n workflow can store a viewable URL
   try {
     const shareResp = await fetch(
-      `https://graph.microsoft.com/v1.0/users/${userEmail}/drive/items/${fileData.id}/createLink`,
+      `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileData.id}/createLink`,
       {
         method: 'POST',
         headers: {
@@ -213,15 +219,65 @@ async function uploadToOneDrive(pdfPath, filename, tripDate) {
 
     if (shareResp.ok) {
       const shareData = await shareResp.json();
-      console.log('[ONEDRIVE] Sharing link created');
+      console.log('[SHAREPOINT] Sharing link created');
       return shareData.link.webUrl;
     }
   } catch (shareErr) {
-    console.log('[ONEDRIVE] Could not create sharing link:', shareErr.message);
+    console.log('[SHAREPOINT] Could not create sharing link:', shareErr.message);
   }
 
   // Fallback to the file's webUrl if sharing link creation fails
   return fileData.webUrl;
+}
+
+/**
+ * Append a row to the SharePoint Excel workbook (TripDetails table).
+ * Called by the /append-row endpoint after N8n formats the full row.
+ *
+ * Uses Graph API: POST /drives/{id}/items/{id}/workbook/tables/{name}/rows/add
+ */
+export async function appendToSharePointExcel(rowData) {
+  const token = await getMsGraphToken();
+  const driveId = process.env.SP_DRIVE_ID;
+  const workbookId = process.env.SP_WORKBOOK_ID;
+  const tableName = process.env.SP_TABLE_NAME || 'TripDetails';
+
+  if (!driveId || !workbookId) {
+    throw new Error('SP_DRIVE_ID or SP_WORKBOOK_ID not set — run setup-sharepoint.js first');
+  }
+
+  // Column order must match the Excel table headers exactly
+  const columns = [
+    'emailReceived','pdfLink','requestType','confirmId','tripCode',
+    'todaysDate','overnightTrip','startDate','endDate','startTime','endTime',
+    'destination','schoolName','address','atsDbn','district','region',
+    'requester','phone1','phone2','studentInitials','studentId','dob',
+    'medicalNeeds','textTemplate','tripLiaison','tripLiaisonEmail','tripLiaisonPhone'
+  ];
+
+  const values = [columns.map(col => rowData[col] || '')];
+
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${workbookId}/workbook/tables/${tableName}/rows/add`;
+
+  console.log(`[SHAREPOINT-EXCEL] Appending row: confirmId=${rowData.confirmId || 'N/A'}`);
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ values })
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`SharePoint Excel append failed (${resp.status}): ${errText}`);
+  }
+
+  const result = await resp.json();
+  console.log('[SHAREPOINT-EXCEL] Row appended successfully');
+  return result;
 }
 
 /**

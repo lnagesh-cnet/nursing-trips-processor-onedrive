@@ -14,9 +14,15 @@ services:
         sync: false
       - key: MS_USER_EMAIL
         value: lnagesh@comprehensivenet.com
-      - key: ONEDRIVE_USER_EMAIL
-        value: lnagesh@comprehensivenet.com
-      - key: ONEDRIVE_FOLDER_PATH
-        value: Nursing Trip PDFs
+      - key: SP_SITE_ID
+        sync: false
+      - key: SP_DRIVE_ID
+        sync: false
+      - key: SP_WORKBOOK_ID
+        sync: false
+      - key: SP_TABLE_NAME
+        value: TripDetails
+      - key: SP_PDF_BASE_PATH
+        value: Nursing Trips/PDFs
       - key: PORT
         value: "10000"
