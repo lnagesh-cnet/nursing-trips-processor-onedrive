@@ -6,6 +6,7 @@ services:
     plan: standard
     healthCheckPath: /
     envVars:
+      # Microsoft Graph (email attachment fetch)
       - key: MS_TENANT_ID
         sync: false
       - key: MS_CLIENT_ID
@@ -14,6 +15,7 @@ services:
         sync: false
       - key: MS_USER_EMAIL
         value: lnagesh@comprehensivenet.com
+      # SharePoint (PDF storage + Excel backup)
       - key: SP_SITE_ID
         sync: false
       - key: SP_DRIVE_ID

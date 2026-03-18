@@ -1,5 +1,5 @@
 {
-  "name": "Nursing Trips Automation (OneDrive)",
+  "name": "Nursing Trips — SharePoint Backup",
   "nodes": [
     {
       "parameters": {
@@ -18,29 +18,29 @@
       "type": "n8n-nodes-base.microsoftOutlookTrigger",
       "typeVersion": 1,
       "position": [0, 0],
-      "notes": "Polls every minute for unread STR trip emails (New, Modified, Cancelled). Requires Microsoft Outlook OAuth2 credential."
+      "notes": "Polls every minute for unread STR trip emails. Independent trigger — does NOT share state with the Google workflow."
     },
     {
       "parameters": {
-        "jsCode": "// Dedup safety net — filter out already-processed emails\n// The Outlook Trigger tracks new-since-last-poll automatically,\n// but this prevents reprocessing if trigger re-delivers an email.\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst items = $input.all();\nconst newItems = items.filter(item => !staticData.processedIds.includes(item.json.id));\n\nconsole.log(`Received ${items.length} emails, ${newItems.length} new (${items.length - newItems.length} already processed)`);\n\nif (newItems.length === 0) return [];\nreturn newItems;"
+        "jsCode": "// Dedup safety net — independent from Google workflow\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst items = $input.all();\nconst newItems = items.filter(item => !staticData.processedIds.includes(item.json.id));\n\nconsole.log(`[SP] Received ${items.length} emails, ${newItems.length} new`);\n\nif (newItems.length === 0) return [];\nreturn newItems;"
       },
       "id": "split-emails",
-      "name": "Split Email List",
+      "name": "Dedup Emails",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [340, 0],
-      "notes": "Dedup safety net — skips emails already processed using workflow static data"
+      "notes": "Independent dedup — separate static data from Google workflow"
     },
     {
       "parameters": {
-        "jsCode": "// Extract email details and parse request type from subject\nconst email = $input.first().json;\nconst subject = email.subject || '';\n\n// Determine request type from subject line pattern\n// Check Re: prefix FIRST (follow-ups), then Modified/Cancelled, else New\nlet requestType = 'New';\nif (/^Re:\\s/i.test(subject)) {\n  requestType = 'Follow-up';\n} else if (/^STR\\s*\\(Modified\\)/i.test(subject)) {\n  requestType = 'Modified';\n} else if (/^STR\\s*\\(Cancell?ed\\)/i.test(subject)) {\n  requestType = 'Cancelled';\n}\n\n// Parse confirmId and tripCode from subject (works for all types including Re:)\nconst confirmIdMatch = subject.match(/Confirm\\s*ID[:\\s]+(\\d+)/i);\nconst confirmId = confirmIdMatch ? confirmIdMatch[1] : '';\nconst tripCodeMatch = subject.match(/\\|\\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\\s*\\|/i);\nconst tripCode = tripCodeMatch ? tripCodeMatch[1] : '';\n\nconsole.log(`Processing [${requestType}]: ${subject}`);\nconsole.log(`  Confirm ID: ${confirmId}, Trip Code: ${tripCode}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripCode\n  }\n}];"
+        "jsCode": "// Extract email details and parse request type from subject\nconst email = $input.first().json;\nconst subject = email.subject || '';\n\nlet requestType = 'New';\nif (/^Re:\\s/i.test(subject)) {\n  requestType = 'Follow-up';\n} else if (/^STR\\s*\\(Modified\\)/i.test(subject)) {\n  requestType = 'Modified';\n} else if (/^STR\\s*\\(Cancell?ed\\)/i.test(subject)) {\n  requestType = 'Cancelled';\n}\n\nconst confirmIdMatch = subject.match(/Confirm\\s*ID[:\\s]+(\\d+)/i);\nconst confirmId = confirmIdMatch ? confirmIdMatch[1] : '';\nconst tripCodeMatch = subject.match(/\\|\\s*([A-Z0-9]+(?:@[A-Z0-9]+)?)\\s*\\|/i);\nconst tripCode = tripCodeMatch ? tripCodeMatch[1] : '';\n\nconsole.log(`[SP] Processing [${requestType}]: ${subject}`);\n\nreturn [{\n  json: {\n    messageId: email.id,\n    subject: email.subject,\n    receivedDateTime: email.receivedDateTime,\n    hasAttachments: email.hasAttachments,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripCode\n  }\n}];"
       },
       "id": "log-email",
-      "name": "Log Email Details",
+      "name": "Parse Email",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [680, 0],
-      "notes": "Parses request type (New/Modified/Cancelled), Confirm ID, and Trip Code from subject"
+      "notes": "Parses request type (New/Modified/Cancelled/Follow-up), Confirm ID, and Trip Code"
     },
     {
       "parameters": {
@@ -52,19 +52,13 @@
               "id": "check-cancelled",
               "leftValue": "={{ $json.requestType }}",
               "rightValue": "Cancelled",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
+              "operator": { "type": "string", "operation": "equals" }
             },
             {
               "id": "check-followup",
               "leftValue": "={{ $json.requestType }}",
               "rightValue": "Follow-up",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
+              "operator": { "type": "string", "operation": "equals" }
             }
           ]
         }
@@ -74,18 +68,18 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [1020, 0],
-      "notes": "Routes Cancelled and Follow-up emails to minimal row path (no PDF processing). New/Modified continue to full pipeline."
+      "notes": "Cancelled/Follow-up → minimal row. New/Modified → full PDF pipeline."
     },
     {
       "parameters": {
-        "jsCode": "// Build a minimal row for Cancelled or Follow-up trip requests\n// No PDF processing needed — just Confirm ID, status, and email timestamp\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\nconst requestType = item.requestType || 'Cancelled';\n\n// Convert ISO date to EST format\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\nconsole.log(`Formatting ${requestType} row: Confirm ID ${item.confirmId}`);\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: '',\n    requestType: requestType,\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '',\n    overnightTrip: '',\n    startDate: '',\n    endDate: '',\n    startTime: '',\n    endTime: '',\n    destination: '',\n    schoolName: '',\n    address: '',\n    atsDbn: '',\n    district: '',\n    region: '',\n    requester: '',\n    phone1: '',\n    phone2: '',\n    studentInitials: '',\n    studentId: '',\n    dob: '',\n    medicalNeeds: '',\n    textTemplate: '',\n    tripLiaison: '',\n    tripLiaisonEmail: '',\n    tripLiaisonPhone: ''\n  }\n}];"
+        "jsCode": "// Build minimal row for Cancelled/Follow-up (no PDF processing)\nconst item = $input.first().json;\nconst receivedDateTime = item.receivedDateTime || '';\n\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: '',\n    requestType: item.requestType || 'Cancelled',\n    confirmId: item.confirmId || '',\n    tripCode: item.tripCode || '',\n    todaysDate: '', overnightTrip: '', startDate: '', endDate: '',\n    startTime: '', endTime: '', destination: '', schoolName: '',\n    address: '', atsDbn: '', district: '', region: '',\n    requester: '', phone1: '', phone2: '',\n    studentInitials: '', studentId: '', dob: '',\n    medicalNeeds: '', textTemplate: '',\n    tripLiaison: '', tripLiaisonEmail: '', tripLiaisonPhone: ''\n  }\n}];"
       },
       "id": "format-cancelled-row",
       "name": "Format Minimal Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1360, 180],
-      "notes": "Builds minimal sheet row for Cancelled/Follow-up: Confirm ID, Trip Code, requestType, and email received timestamp."
+      "notes": "Minimal row for Cancelled/Follow-up emails"
     },
     {
       "parameters": {
@@ -99,18 +93,16 @@
             { "name": "$select", "value": "id,name,contentType,size" }
           ]
         },
-        "options": {
-          "timeout": 30000
-        }
+        "options": { "timeout": 30000 }
       },
       "id": "get-attachments",
-      "name": "Get Email Attachments",
+      "name": "Get Attachments",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1360, -100],
       "retryOnFail": true,
       "maxTries": 2,
-      "notes": "Fetches all attachments for this email from Microsoft Graph"
+      "notes": "Fetches email attachments from Microsoft Graph"
     },
     {
       "parameters": {
@@ -121,8 +113,7 @@
       "name": "Split Attachments",
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
-      "position": [1490, -100],
-      "notes": "Splits the Graph API attachment array into individual items"
+      "position": [1490, -100]
     },
     {
       "parameters": {
@@ -134,10 +125,7 @@
               "id": "filter-securedoc",
               "leftValue": "={{ $json.name }}",
               "rightValue": "securedoc",
-              "operator": {
-                "type": "string",
-                "operation": "contains"
-              }
+              "operator": { "type": "string", "operation": "contains" }
             }
           ]
         }
@@ -146,8 +134,7 @@
       "name": "Filter Securedoc",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
-      "position": [1620, -100],
-      "notes": "Keeps only the securedoc HTML attachment. If none found, downstream nodes are skipped."
+      "position": [1620, -100]
     },
     {
       "parameters": {
@@ -155,9 +142,9 @@
         "duplicateItem": false,
         "assignments": {
           "assignments": [
-            { "id": "set-messageId", "name": "messageId", "value": "={{ $('Log Email Details').item.json.messageId }}", "type": "string" },
-            { "id": "set-emailSubject", "name": "emailSubject", "value": "={{ $('Log Email Details').item.json.subject }}", "type": "string" },
-            { "id": "set-receivedDateTime", "name": "receivedDateTime", "value": "={{ $('Log Email Details').item.json.receivedDateTime }}", "type": "string" },
+            { "id": "set-messageId", "name": "messageId", "value": "={{ $('Parse Email').item.json.messageId }}", "type": "string" },
+            { "id": "set-emailSubject", "name": "emailSubject", "value": "={{ $('Parse Email').item.json.subject }}", "type": "string" },
+            { "id": "set-receivedDateTime", "name": "receivedDateTime", "value": "={{ $('Parse Email').item.json.receivedDateTime }}", "type": "string" },
             { "id": "set-attachmentId", "name": "attachmentId", "value": "={{ $json.id }}", "type": "string" },
             { "id": "set-attachmentName", "name": "attachmentName", "value": "={{ $json.name }}", "type": "string" },
             { "id": "set-attachmentSize", "name": "attachmentSize", "value": "={{ $json.size }}", "type": "number" }
@@ -169,8 +156,7 @@
       "name": "Set Attachment Info",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1750, -100],
-      "notes": "Restructures output with messageId, emailSubject, receivedDateTime from email + attachment details"
+      "position": [1750, -100]
     },
     {
       "parameters": {
@@ -179,19 +165,17 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"messageId\": \"{{ $json.messageId }}\",\n  \"attachmentId\": \"{{ $json.attachmentId }}\",\n  \"emailSubject\": \"{{ $json.emailSubject }}\"\n}",
-        "options": {
-          "timeout": 180000
-        }
+        "options": { "timeout": 180000 }
       },
       "id": "call-processor",
-      "name": "Send to Render Processor",
+      "name": "Send to SharePoint Processor",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1880, -100],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 10000,
-      "notes": "Sends messageId + attachmentId to Render. Processor fetches HTML, runs Puppeteer, extracts PDF fields, uploads to Drive."
+      "notes": "Sends to the SharePoint Render service. Processor fetches HTML, runs Puppeteer, extracts PDF, uploads to SharePoint."
     },
     {
       "parameters": {
@@ -202,10 +186,7 @@
               "id": "check-success",
               "leftValue": "={{ $json.success }}",
               "rightValue": "true",
-              "operator": {
-                "type": "boolean",
-                "operation": "true"
-              }
+              "operator": { "type": "boolean", "operation": "true" }
             }
           ]
         }
@@ -214,80 +195,29 @@
       "name": "Processing OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2140, -100],
-      "notes": "Checks if the Render processor returned success"
+      "position": [2140, -100]
     },
     {
       "parameters": {
-        "jsCode": "// Display the extracted trip fields for monitoring\nconst data = $input.first().json;\nconst trip = data.tripFields || {};\nconst studentCount = (data.students || []).length;\n\nconsole.log(`Trip: ${trip.confirmId} | ${trip.tripCode} | ${trip.destination}`);\nconsole.log(`Students: ${studentCount}`);\n\nreturn [{\n  json: {\n    confirmId: trip.confirmId || '',\n    tripCode: trip.tripCode || '',\n    destination: trip.destination || '',\n    schoolName: trip.schoolName || '',\n    startDate: trip.startDate || '',\n    endDate: trip.endDate || '',\n    startTime: trip.startTime || '',\n    endTime: trip.endTime || '',\n    overnightTrip: trip.overnightTrip || '',\n    studentCount: studentCount,\n    pdfLink: data.driveUrl || '',\n    pdfFilename: data.pdfFilename || '',\n    // Pass through full data for next nodes\n    _fullResponse: data\n  }\n}];"
+        "jsCode": "// Log extracted trip fields\nconst data = $input.first().json;\nconst trip = data.tripFields || {};\nconst studentCount = (data.students || []).length;\n\nconsole.log(`[SP] Trip: ${trip.confirmId} | ${trip.tripCode} | ${trip.destination}`);\nconsole.log(`[SP] Students: ${studentCount}, SharePoint: ${data.sharePointUrl || 'N/A'}`);\n\nreturn [{ json: data }];"
       },
       "id": "log-trip",
       "name": "Log Trip Fields",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2400, -200],
-      "notes": "Shows extracted trip data: Confirm ID, Trip Code, destination, school, dates, student count"
+      "notes": "Logs extracted trip data for monitoring"
     },
     {
       "parameters": {
-        "jsCode": "// Trip Liaison lookup table\nconst LIAISONS = [\n  { name: 'Samantha Liang',  email: 'slaing@health.nyc.gov',     phone: '(929)-468-5680', districts: [19, 20, 23, 32] },\n  { name: 'Samiyrah Hudson', email: 'shudson1@health.nyc.gov',   phone: '(929)-468-5826', districts: [7, 8, 9, 10] },\n  { name: 'William Lolagne', email: 'wlolagne@health.nyc.gov',   phone: '(929)-468-5507', districts: [13, 14, 15, 16, 22] },\n  { name: 'Tiara Lowder',    email: 'tlowder@health.nyc.gov',    phone: '(929)-468-5788', districts: [24, 25, 26, 30] },\n  { name: 'Joseph Weidman',  email: 'JWeideman@schools.nyc.gov', phone: '(347)-697-3179', districts: [5, 6] },\n];\nconst D75_LOW  = { name: 'Natalie Veriguete', email: 'NVeriguete@schools.nyc.gov', phone: '(929)-404-1926' };\nconst D75_HIGH = { name: 'Tracey Bolden',     email: 'tbolden1@health.nyc.gov',    phone: '(347)-534-7078' };\n\nfunction lookupLiaison(schoolName, district) {\n  const distNum = parseInt(district, 10);\n  if (isNaN(distNum)) return null;\n  const isCitywide = (schoolName || '').includes('@');\n  if (isCitywide) {\n    if (distNum >= 1 && distNum <= 12) return D75_LOW;\n    if (distNum >= 13 && distNum <= 23) return D75_HIGH;\n  }\n  return LIAISONS.find(l => l.districts.includes(distNum)) || null;\n}\n\nfunction aggregateMeds(students) {\n  const counts = {};\n  const display = {};\n  for (const s of students) {\n    const raw = s.medicalNeeds || '';\n    if (!raw) continue;\n    for (const med of raw.split(',')) {\n      const trimmed = med.trim().replace(/^Meds:\\s*/i, '');\n      if (!trimmed) continue;\n      const key = trimmed.toLowerCase();\n      counts[key] = (counts[key] || 0) + 1;\n      if (!display[key]) display[key] = trimmed;\n    }\n  }\n  const parts = Object.keys(counts).map(key =>\n    counts[key] > 1 ? `${display[key]} (${counts[key]})` : display[key]\n  );\n  return parts.join(', ') || 'None reported';\n}\n\n// Build single row with students as comma-separated arrays\n// Read directly from Render response node (bypasses _fullResponse)\nconst renderResponse = $('Send to Render Processor').first().json;\nconst tripFields = renderResponse.tripFields || {};\nconst students = renderResponse.students || [];\nconst pdfLink = renderResponse.driveUrl || '';\nconst receivedDateTime = $('Set Attachment Info').first().json.receivedDateTime || '';\n\n// Convert ISO date to EST format\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\n// Get requestType from Log Email Details (New or Modified)\nconst requestType = $('Log Email Details').first().json.requestType || 'New';\nconst confirmId = tripFields.confirmId || $('Log Email Details').first().json.confirmId || '';\n\n// Text template for liaison texting\nlet textTemplate = '';\nif (tripFields.startDate) {\n  const dp = tripFields.startDate.match(/(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/);\n  if (dp) {\n    const dateObj = new Date(parseInt(dp[3]), parseInt(dp[1]) - 1, parseInt(dp[2]));\n    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];\n    const dayName = days[dateObj.getDay()];\n    const shortDate = `${parseInt(dp[1])}/${parseInt(dp[2])}`;\n    const studentCount = students.length;\n    const meds = aggregateMeds(students);\n    textTemplate = `Trip Coverage for ${dayName} ${shortDate}\\nSchool: ${tripFields.schoolName || 'N/A'}\\nAddress: ${tripFields.address || 'N/A'}\\nTrip Hours: ${tripFields.startTime || 'N/A'} \\u2013 ${tripFields.endTime || 'N/A'}\\nTrip Destination: ${tripFields.destination || 'N/A'}\\nTrip Confirmation # ${confirmId || 'N/A'}\\n${studentCount} student(s)\\nMeds: ${meds}`;\n  }\n}\n\n// Trip Liaison lookup\nconst liaison = lookupLiaison(tripFields.schoolName || '', tripFields.district || '');\n\nconsole.log(`Formatting ${students.length} student(s) as arrays [${requestType}]`);\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: pdfLink,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripFields.tripCode || $('Log Email Details').first().json.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || 'Not Listed',\n    phone2: tripFields.phone2 || 'Not Listed',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: aggregateMeds(students),\n    textTemplate: textTemplate,\n    tripLiaison: liaison ? liaison.name : '',\n    tripLiaisonEmail: liaison ? liaison.email : '',\n    tripLiaisonPhone: liaison ? liaison.phone : ''\n  }\n}];"
+        "jsCode": "// Trip Liaison lookup table\nconst LIAISONS = [\n  { name: 'Samantha Liang',  email: 'slaing@health.nyc.gov',     phone: '(929)-468-5680', districts: [19, 20, 23, 32] },\n  { name: 'Samiyrah Hudson', email: 'shudson1@health.nyc.gov',   phone: '(929)-468-5826', districts: [7, 8, 9, 10] },\n  { name: 'William Lolagne', email: 'wlolagne@health.nyc.gov',   phone: '(929)-468-5507', districts: [13, 14, 15, 16, 22] },\n  { name: 'Tiara Lowder',    email: 'tlowder@health.nyc.gov',    phone: '(929)-468-5788', districts: [24, 25, 26, 30] },\n  { name: 'Joseph Weidman',  email: 'JWeideman@schools.nyc.gov', phone: '(347)-697-3179', districts: [5, 6] },\n];\nconst D75_LOW  = { name: 'Natalie Veriguete', email: 'NVeriguete@schools.nyc.gov', phone: '(929)-404-1926' };\nconst D75_HIGH = { name: 'Tracey Bolden',     email: 'tbolden1@health.nyc.gov',    phone: '(347)-534-7078' };\n\nfunction lookupLiaison(schoolName, district) {\n  const distNum = parseInt(district, 10);\n  if (isNaN(distNum)) return null;\n  const isCitywide = (schoolName || '').includes('@');\n  if (isCitywide) {\n    if (distNum >= 1 && distNum <= 12) return D75_LOW;\n    if (distNum >= 13 && distNum <= 23) return D75_HIGH;\n  }\n  return LIAISONS.find(l => l.districts.includes(distNum)) || null;\n}\n\nfunction aggregateMeds(students) {\n  const counts = {};\n  const display = {};\n  for (const s of students) {\n    const raw = s.medicalNeeds || '';\n    if (!raw) continue;\n    for (const med of raw.split(',')) {\n      const trimmed = med.trim().replace(/^Meds:\\s*/i, '');\n      if (!trimmed) continue;\n      const key = trimmed.toLowerCase();\n      counts[key] = (counts[key] || 0) + 1;\n      if (!display[key]) display[key] = trimmed;\n    }\n  }\n  const parts = Object.keys(counts).map(key =>\n    counts[key] > 1 ? `${display[key]} (${counts[key]})` : display[key]\n  );\n  return parts.join(', ') || 'None reported';\n}\n\n// Read from SharePoint Render processor response\nconst renderResponse = $('Send to SharePoint Processor').first().json;\nconst tripFields = renderResponse.tripFields || {};\nconst students = renderResponse.students || [];\nconst pdfLink = renderResponse.sharePointUrl || '';\nconst receivedDateTime = $('Set Attachment Info').first().json.receivedDateTime || '';\n\nlet emailReceived = '';\nif (receivedDateTime) {\n  const d = new Date(receivedDateTime);\n  emailReceived = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });\n}\n\nconst requestType = $('Parse Email').first().json.requestType || 'New';\nconst confirmId = tripFields.confirmId || $('Parse Email').first().json.confirmId || '';\n\n// Text template for liaison texting\nlet textTemplate = '';\nif (tripFields.startDate) {\n  const dp = tripFields.startDate.match(/(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/);\n  if (dp) {\n    const dateObj = new Date(parseInt(dp[3]), parseInt(dp[1]) - 1, parseInt(dp[2]));\n    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];\n    const dayName = days[dateObj.getDay()];\n    const shortDate = `${parseInt(dp[1])}/${parseInt(dp[2])}`;\n    const studentCount = students.length;\n    const meds = aggregateMeds(students);\n    textTemplate = `Trip Coverage for ${dayName} ${shortDate}\\nSchool: ${tripFields.schoolName || 'N/A'}\\nAddress: ${tripFields.address || 'N/A'}\\nTrip Hours: ${tripFields.startTime || 'N/A'} \\u2013 ${tripFields.endTime || 'N/A'}\\nTrip Destination: ${tripFields.destination || 'N/A'}\\nTrip Confirmation # ${confirmId || 'N/A'}\\n${studentCount} student(s)\\nMeds: ${meds}`;\n  }\n}\n\nconst liaison = lookupLiaison(tripFields.schoolName || '', tripFields.district || '');\n\nconsole.log(`[SP] Formatting ${students.length} student(s) for SharePoint Excel [${requestType}]`);\n\nreturn [{\n  json: {\n    emailReceived: emailReceived,\n    pdfLink: pdfLink,\n    requestType: requestType,\n    confirmId: confirmId,\n    tripCode: tripFields.tripCode || $('Parse Email').first().json.tripCode || '',\n    todaysDate: tripFields.todaysDate || '',\n    overnightTrip: tripFields.overnightTrip || '',\n    startDate: tripFields.startDate || '',\n    endDate: tripFields.endDate || '',\n    startTime: tripFields.startTime || '',\n    endTime: tripFields.endTime || '',\n    destination: tripFields.destination || '',\n    schoolName: tripFields.schoolName || '',\n    address: tripFields.address || '',\n    atsDbn: tripFields.atsDbn || '',\n    district: tripFields.district || '',\n    region: tripFields.region || '',\n    requester: tripFields.requester || '',\n    phone1: tripFields.phone1 || 'Not Listed',\n    phone2: tripFields.phone2 || 'Not Listed',\n    studentInitials: students.map(s => s.initials || '').join(', '),\n    studentId: students.map(s => s.studentId || '').join(', '),\n    dob: students.map(s => s.dob || '').join(', '),\n    medicalNeeds: aggregateMeds(students),\n    textTemplate: textTemplate,\n    tripLiaison: liaison ? liaison.name : '',\n    tripLiaisonEmail: liaison ? liaison.email : '',\n    tripLiaisonPhone: liaison ? liaison.phone : ''\n  }\n}];"
       },
-      "id": "expand-students",
-      "name": "Format Sheet Row",
+      "id": "format-row",
+      "name": "Format Excel Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2660, -200],
-      "notes": "Builds single row with students as comma-separated arrays (columns R-U)"
-    },
-    {
-      "parameters": {
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0/edit?gid=1623775001#gid=1623775001",
-          "mode": "url"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/1ukXEeNhbNYOHERWV2NroELaR4jwQJoYL0900__m4ur0/edit?gid=1623775001#gid=1623775001",
-          "mode": "url"
-        },
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [],
-          "schema": []
-        },
-        "options": {}
-      },
-      "id": "write-sheets",
-      "name": "Write to Google Sheets",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "position": [2920, -200],
-      "notes": "Appends one row per trip to trip_details tab"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Mark this email as processed so it won't be re-processed next run\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst messageId = $('Log Email Details').first().json.messageId;\nif (messageId && !staticData.processedIds.includes(messageId)) {\n  staticData.processedIds.push(messageId);\n  // Keep only last 200 IDs to prevent unbounded growth\n  if (staticData.processedIds.length > 200) {\n    staticData.processedIds = staticData.processedIds.slice(-200);\n  }\n}\n\nconsole.log(`Marked ${messageId} as processed (${staticData.processedIds.length} total tracked)`);\nreturn $input.all();"
-      },
-      "id": "mark-processed",
-      "name": "Mark Processed",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [3180, -200],
-      "notes": "Stores processed messageId in workflow static data to prevent re-processing"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Log the processing failure details\nconst result = $input.first().json;\nconst emailInfo = $('Set Attachment Info').first().json;\n\nconsole.error(`FAILED: ${emailInfo.emailSubject}`);\nconsole.error(`Error: ${result.error || 'Unknown error'}`);\n\nreturn [{\n  json: {\n    status: 'FAILED',\n    emailSubject: emailInfo.emailSubject,\n    messageId: emailInfo.messageId,\n    error: result.error || 'Unknown processing error',\n    elapsed: result.elapsed || '',\n    timestamp: new Date().toISOString()\n  }\n}];"
-      },
-      "id": "processing-failed",
-      "name": "Processing Failed",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2400, 0],
-      "notes": "Logs error details when the Render processor fails. Email stays unread for retry."
+      "notes": "Builds full 28-column row for SharePoint Excel. Uses sharePointUrl as pdfLink."
     },
     {
       "parameters": {
@@ -296,33 +226,53 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json) }}",
-        "options": {
-          "timeout": 30000
-        }
+        "options": { "timeout": 30000 }
       },
       "id": "write-sharepoint-excel",
-      "name": "Backup to SharePoint Excel",
+      "name": "Write to SharePoint Excel",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [3180, -400],
+      "position": [2920, -200],
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 5000,
-      "notes": "Backup: appends the same row data to a SharePoint Excel workbook (TripDetails table) via the Render processor /append-row endpoint."
+      "notes": "Appends row to SharePoint Excel TripDetails table via Render /append-row endpoint"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark email as processed in this workflow's static data\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.processedIds) staticData.processedIds = [];\n\nconst messageId = $('Parse Email').first().json.messageId;\nif (messageId && !staticData.processedIds.includes(messageId)) {\n  staticData.processedIds.push(messageId);\n  if (staticData.processedIds.length > 200) {\n    staticData.processedIds = staticData.processedIds.slice(-200);\n  }\n}\n\nconsole.log(`[SP] Marked ${messageId} as processed (${staticData.processedIds.length} tracked)`);\nreturn $input.all();"
+      },
+      "id": "mark-processed",
+      "name": "Mark Processed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3180, -200],
+      "notes": "Stores processed messageId in this workflow's static data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log processing failure\nconst result = $input.first().json;\nconst emailInfo = $('Set Attachment Info').first().json;\n\nconsole.error(`[SP] FAILED: ${emailInfo.emailSubject}`);\nconsole.error(`[SP] Error: ${result.error || 'Unknown error'}`);\n\nreturn [{\n  json: {\n    status: 'FAILED',\n    emailSubject: emailInfo.emailSubject,\n    messageId: emailInfo.messageId,\n    error: result.error || 'Unknown processing error',\n    elapsed: result.elapsed || '',\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "processing-failed",
+      "name": "Processing Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 0],
+      "notes": "Logs error details. Email stays unread for retry on next poll."
     }
   ],
   "connections": {
     "New Trip Email": {
       "main": [
-        [{ "node": "Split Email List", "type": "main", "index": 0 }]
+        [{ "node": "Dedup Emails", "type": "main", "index": 0 }]
       ]
     },
-    "Split Email List": {
+    "Dedup Emails": {
       "main": [
-        [{ "node": "Log Email Details", "type": "main", "index": 0 }]
+        [{ "node": "Parse Email", "type": "main", "index": 0 }]
       ]
     },
-    "Log Email Details": {
+    "Parse Email": {
       "main": [
         [{ "node": "Skip PDF?", "type": "main", "index": 0 }]
       ]
@@ -330,15 +280,15 @@
     "Skip PDF?": {
       "main": [
         [{ "node": "Format Minimal Row", "type": "main", "index": 0 }],
-        [{ "node": "Get Email Attachments", "type": "main", "index": 0 }]
+        [{ "node": "Get Attachments", "type": "main", "index": 0 }]
       ]
     },
     "Format Minimal Row": {
       "main": [
-        [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+        [{ "node": "Write to SharePoint Excel", "type": "main", "index": 0 }]
       ]
     },
-    "Get Email Attachments": {
+    "Get Attachments": {
       "main": [
         [{ "node": "Split Attachments", "type": "main", "index": 0 }]
       ]
@@ -355,10 +305,10 @@
     },
     "Set Attachment Info": {
       "main": [
-        [{ "node": "Send to Render Processor", "type": "main", "index": 0 }]
+        [{ "node": "Send to SharePoint Processor", "type": "main", "index": 0 }]
       ]
     },
-    "Send to Render Processor": {
+    "Send to SharePoint Processor": {
       "main": [
         [{ "node": "Processing OK?", "type": "main", "index": 0 }]
       ]
@@ -371,20 +321,17 @@
     },
     "Log Trip Fields": {
       "main": [
-        [{ "node": "Format Sheet Row", "type": "main", "index": 0 }]
+        [{ "node": "Format Excel Row", "type": "main", "index": 0 }]
       ]
     },
-    "Format Sheet Row": {
+    "Format Excel Row": {
       "main": [
-        [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+        [{ "node": "Write to SharePoint Excel", "type": "main", "index": 0 }]
       ]
     },
-    "Write to Google Sheets": {
+    "Write to SharePoint Excel": {
       "main": [
-        [
-          { "node": "Backup to SharePoint Excel", "type": "main", "index": 0 },
-          { "node": "Mark Processed", "type": "main", "index": 0 }
-        ]
+        [{ "node": "Mark Processed", "type": "main", "index": 0 }]
       ]
     }
   },
@@ -395,6 +342,6 @@
   "staticData": null,
   "tags": [
     { "name": "nursing-trips" },
-    { "name": "automation" }
+    { "name": "sharepoint-backup" }
   ]
 }

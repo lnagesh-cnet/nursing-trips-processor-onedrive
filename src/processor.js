@@ -28,7 +28,7 @@ async function getMsGraphToken() {
 }
 
 /**
- * Main processor with pdf-parse field extraction and SharePoint upload
+ * Main processor: PDF extraction + SharePoint upload (standalone backup service)
  */
 export async function processSecureEmail({ htmlContent, htmlBase64, messageId, attachmentId, emailSubject }) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nursing-trip-'));
@@ -77,18 +77,19 @@ export async function processSecureEmail({ htmlContent, htmlBase64, messageId, a
     const metadata = parseEmailSubject(emailSubject || '');
     const pdfFilename = `${metadata.tripCode || 'UNKNOWN'}_${metadata.confirmId || Date.now()}.pdf`;
 
-    // ===== STEP 6: Upload PDF to SharePoint (organized by year/month) =====
-    console.log('[PROCESSOR] Uploading to SharePoint...');
     const tripDate = extractedData.tripFields.startDate || extractedData.tripFields.todaysDate || '';
-    const driveUrl = await uploadToSharePoint(pdfPath, pdfFilename, tripDate);
-    console.log('[PROCESSOR] Uploaded to SharePoint:', driveUrl);
+
+    // ===== STEP 6: Upload PDF to SharePoint =====
+    console.log('[PROCESSOR] Uploading to SharePoint...');
+    const sharePointUrl = await uploadToSharePoint(pdfPath, pdfFilename, tripDate);
+    console.log('[PROCESSOR] Uploaded to SharePoint:', sharePointUrl);
 
     // ===== STEP 7: Clean up =====
     await fs.remove(tmpDir);
 
     return {
       success: true,
-      driveUrl,
+      sharePointUrl,
       pdfFilename,
       tripFields: {
         ...metadata,
@@ -148,7 +149,6 @@ async function extractFieldsWithPdfParse(pdfPath, emailSubject = '') {
 /**
  * Upload PDF to SharePoint document library organized by year/month.
  * Uses Microsoft Graph API PUT endpoint which auto-creates folders.
- * Requires Sites.ReadWrite.All + Files.ReadWrite.All application permissions.
  *
  * SharePoint path: Nursing Trips/PDFs/{Year}/{Month}/{filename}.pdf
  */
@@ -161,7 +161,6 @@ async function uploadToSharePoint(pdfPath, filename, tripDate) {
     throw new Error('SP_DRIVE_ID not set — run setup-sharepoint.js first');
   }
 
-  // Determine year and month from trip date (MM/DD/YYYY format)
   const monthNames = ['January','February','March','April','May','June',
     'July','August','September','October','November','December'];
   let year, month;
@@ -175,7 +174,6 @@ async function uploadToSharePoint(pdfPath, filename, tripDate) {
     month = monthNames[now.getMonth()];
   }
 
-  // Upload PDF — Graph API auto-creates intermediate folders
   const filePath = `${basePath}/${year}/${month}/${filename}`;
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/content`;
@@ -200,7 +198,6 @@ async function uploadToSharePoint(pdfPath, filename, tripDate) {
   const fileData = await uploadResp.json();
   console.log(`[SHAREPOINT] File created: ${fileData.name} (${fileData.size} bytes)`);
 
-  // Create a sharing link so the N8n workflow can store a viewable URL
   try {
     const shareResp = await fetch(
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileData.id}/createLink`,
@@ -226,15 +223,12 @@ async function uploadToSharePoint(pdfPath, filename, tripDate) {
     console.log('[SHAREPOINT] Could not create sharing link:', shareErr.message);
   }
 
-  // Fallback to the file's webUrl if sharing link creation fails
   return fileData.webUrl;
 }
 
 /**
  * Append a row to the SharePoint Excel workbook (TripDetails table).
  * Called by the /append-row endpoint after N8n formats the full row.
- *
- * Uses Graph API: POST /drives/{id}/items/{id}/workbook/tables/{name}/rows/add
  */
 export async function appendToSharePointExcel(rowData) {
   const token = await getMsGraphToken();
@@ -246,7 +240,6 @@ export async function appendToSharePointExcel(rowData) {
     throw new Error('SP_DRIVE_ID or SP_WORKBOOK_ID not set — run setup-sharepoint.js first');
   }
 
-  // Column order must match the Excel table headers exactly
   const columns = [
     'emailReceived','pdfLink','requestType','confirmId','tripCode',
     'todaysDate','overnightTrip','startDate','endDate','startTime','endTime',
@@ -282,7 +275,6 @@ export async function appendToSharePointExcel(rowData) {
 
 /**
  * Parse email subject for Confirm ID and Trip Code
- * (These come from email, not PDF)
  */
 function parseEmailSubject(subject) {
   const confirmMatch = subject.match(/Confirm ID:\s*(\d+)/i);
