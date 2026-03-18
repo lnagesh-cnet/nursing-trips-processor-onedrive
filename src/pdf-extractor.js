@@ -152,33 +152,84 @@ export function parseStudentTable(text) {
 
   const lines = text.slice(tableStart).split('\n').map(l => l.trim()).filter(Boolean);
 
-  // Find where data rows start (after header)
+  // Find where data rows start (after header line(s))
   let dataStart = 1;
   for (let i = 0; i < lines.length; i++) {
     if (/Initials/i.test(lines[i])) { dataStart = i + 1; break; }
   }
-
-  // Two patterns:
-  // 1. Concatenated (no spaces): BP25849100106/01/2019Meds: EMS Albuterol
-  //    {2 caps}{6-12 digits}{MM/DD/YYYY}{rest}
-  // 2. Spaced: BP  258491001  06/01/2019  Meds: EMS Albuterol
-  const ROW_CONCAT = /^([A-Z]{2})(\d{6,12})(\d{1,2}\/\d{1,2}\/\d{4})(.*)/;
-  const ROW_SPACED = /^([A-Z]{2})\s+(\d{6,12})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*(.*)/;
-
-  for (let i = dataStart; i < Math.min(dataStart + 15, lines.length); i++) {
-    const m = lines[i].match(ROW_SPACED) || lines[i].match(ROW_CONCAT);
-    if (m) {
-      students.push({
-        initials:     m[1].trim(),
-        studentId:    m[2].trim(),
-        dob:          m[3].trim(),
-        medicalNeeds: m[4].trim()
-      });
-    }
-    if (/^(Certification|Signature|©|Page \d)/i.test(lines[i])) break;
+  // Skip additional header continuation lines (e.g. "Medical Needs" on its own line)
+  while (dataStart < lines.length && /^(Medical\s*Needs|Date\s*of\s*Birth)$/i.test(lines[dataStart])) {
+    dataStart++;
   }
 
-  console.log(`[DOCAI] Parsed ${students.length} student row(s)`);
+  // Four patterns (ordered: most specific first in matching logic):
+  // 1. Spaced with ID:         ART  258491001  06/01/2019  Meds: Glucose
+  // 2. Concatenated with ID:   BP25849100106/01/2019Meds: EMS Albuterol
+  // 3. Spaced, no Student-Id:  MP  09/25/2014  Allergy: Egg white
+  // 4. Concat, no Student-Id:  MP09/25/2014Allergy: Egg white
+  //    (pdf-parse strips all spaces from table cells)
+  // Initials: 1-7 chars, starts with letter, may include lowercase and periods
+  // (seen: "BP", "ART", "NJRc", "CSAP", "G.H.", "P.R.")
+  // Concat ID uses non-greedy \d{6,12}? to avoid stealing leading digit from date
+  const INIT = '[A-Za-z][A-Za-z.]{0,6}';
+  const ROW_SPACED    = new RegExp(`^(${INIT})\\s+(\\d{6,12})\\s+(\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\s*(.*)`);
+  const ROW_CONCAT    = new RegExp(`^(${INIT})(\\d{6,12}?)(\\d{1,2}\\/\\d{1,2}\\/\\d{4})(.*)`);
+  const ROW_NO_ID     = new RegExp(`^(${INIT})\\s+(\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\s*(.*)`);
+  const ROW_NO_ID_CAT = new RegExp(`^(${INIT})(\\d{1,2}\\/\\d{1,2}\\/\\d{4})(.*)`);
+
+  // Pattern to detect a medical needs continuation line
+  const STOP_PATTERN = /^(Certification|Signature|©|Page \d|Comments|Person\s*Requesting)/i;
+  const NEW_ROW_PATTERN = new RegExp(`^${INIT}[\\s\\d]`);
+  const MED_KEYWORDS = /^(Meds?[:\s]|EMS\s|STD\s|PRN\s|ASTHMA|SEIZURE|ALLERG|DIABETE|EPIPEN|INSULIN|OXYGEN|NEBULIZER|CATHETER|TRACH|G[\-\s]?TUBE|VENTILATOR|SUCTION|MONITOR|MEDICATION|NONE\s*REPORTED|NONE\s*KNOWN|NO\s*MEDICAL|N\/A)/i;
+  const MED_CONTINUATION = /^[,;]?\s*(EMS|STD|PRN|Meds?)\b/i;
+
+  for (let i = dataStart; i < Math.min(dataStart + 30, lines.length); i++) {
+    if (STOP_PATTERN.test(lines[i])) break;
+
+    // Try patterns: with-ID first (spaced > concat), then no-ID (spaced > concat)
+    const mWithId = lines[i].match(ROW_SPACED) || lines[i].match(ROW_CONCAT);
+    const mNoId = !mWithId ? (lines[i].match(ROW_NO_ID) || lines[i].match(ROW_NO_ID_CAT)) : null;
+    const matched = mWithId || mNoId;
+    if (matched) {
+      // With-ID patterns: groups [1]=initials [2]=studentId [3]=dob [4]=medNeeds
+      // No-ID patterns:   groups [1]=initials [2]=dob [3]=medNeeds
+      const initials  = matched[1].trim();
+      const studentId = mWithId ? mWithId[2].trim() : '';
+      const dob       = mWithId ? mWithId[3].trim() : mNoId[2].trim();
+      let medNeeds    = mWithId ? mWithId[4].trim() : (mNoId[3] || '').trim();
+
+      // Look ahead for continuation lines that contain medical needs
+      // These are lines that don't start a new student row and aren't stop markers
+      let j = i + 1;
+      while (j < Math.min(dataStart + 30, lines.length)) {
+        const nextLine = lines[j];
+        if (!nextLine || STOP_PATTERN.test(nextLine)) break;
+        // If next line looks like a new student row, stop
+        if (NEW_ROW_PATTERN.test(nextLine) && (nextLine.match(ROW_SPACED) || nextLine.match(ROW_CONCAT) || nextLine.match(ROW_NO_ID) || nextLine.match(ROW_NO_ID_CAT))) break;
+        // If next line contains medical keywords or is a continuation, append it
+        if (MED_KEYWORDS.test(nextLine) || MED_CONTINUATION.test(nextLine) ||
+            // Also catch lines that are clearly not a new student row and appear
+            // to be medical data (contains common terms or follows a pattern)
+            (!NEW_ROW_PATTERN.test(nextLine) && medNeeds === '' && /[A-Za-z]/.test(nextLine))) {
+          medNeeds = medNeeds ? medNeeds + ' ' + nextLine : nextLine;
+          j++;
+        } else {
+          break;
+        }
+      }
+      // Advance i past any continuation lines we consumed
+      i = j - 1;
+
+      students.push({
+        initials,
+        studentId,
+        dob,
+        medicalNeeds: medNeeds.trim()
+      });
+    }
+  }
+
+  console.log(`[DOCAI] Parsed ${students.length} student row(s)${students.some(s => s.medicalNeeds) ? '' : ' (no medical needs found)'}`);
   return students;
 }
 
